@@ -1,0 +1,6 @@
+dbt-core>=1.9
+dbt-snowflake>=1.9
+snowflake-connector-python[pandas]>=3.10
+pandas>=2.2
+requests>=2.32
+python-dotenv>=1.0

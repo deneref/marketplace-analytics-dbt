@@ -216,3 +216,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- project-specific (marketplace-analytics-dbt) ----
+# private data & secrets — never commit
+data/
+.env.*
+!.env.example
+*.key
+*.p8
+profiles.yml
+# dbt artefacts
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+logs/
+# macOS
+.DS_Store

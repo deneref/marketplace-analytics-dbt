@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: stg_ym__order_items
+    description: "One row per order line (order × SKU), typed and de-duplicated by latest load."
+    columns:
+      - name: order_item_key
+        description: "Surrogate key: order_id + sku."
+        data_tests: [unique, not_null]
+      - name: order_id
+        data_tests: [not_null]
+      - name: sku
+        data_tests: [not_null]
+      - name: ordered_at
+        data_tests: [not_null]
+      - name: order_status
+        description: "Marketplace order status. TODO: fill accepted values from real data."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['DELIVERED', 'CANCELLED', 'RETURNED', 'PROCESSING', 'SHIPPED']
+              config: {severity: warn}
+      - name: units
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1

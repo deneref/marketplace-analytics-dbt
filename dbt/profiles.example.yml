@@ -1,0 +1,15 @@
+# Copy to ~/.dbt/profiles.yml — never commit the real one.
+marketplace_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: ACCOUNTADMIN          # trial default; narrow in a real setup
+      warehouse: DBT_WH
+      database: MARKETPLACE
+      schema: DBT_DEV
+      threads: 4
+      client_session_keep_alive: false

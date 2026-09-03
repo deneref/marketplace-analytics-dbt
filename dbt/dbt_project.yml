@@ -1,0 +1,36 @@
+name: marketplace_analytics
+version: 1.0.0
+profile: marketplace_analytics
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  use_demo_seeds: false        # dbt build --vars '{"use_demo_seeds": true}' runs on synthetic seeds, no API needed
+  base_month: "2025-01-01"     # index base for public rpt_* views
+
+models:
+  marketplace_analytics:
+    staging:
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: ephemeral
+    marts:
+      +materialized: table
+      +schema: marts
+    reporting:
+      +materialized: view
+      +schema: reporting
+
+seeds:
+  marketplace_analytics:
+    +schema: seeds
+    +column_types:
+      # keep raw-like seeds as strings; staging casts them
+      _LOADED_AT: varchar
