@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import pathlib
 import re
@@ -30,22 +31,36 @@ MANIFEST = RAW_DIR / "_loaded.txt"      # one loaded file path per line (git-ign
 
 
 def table_name(report_dir: str, file: pathlib.Path) -> str:
-    """united_orders/<run>/<period>/Orders.csv → UNITED_ORDERS_ORDERS ; stock_snapshots/.../stocks.jsonl → STOCK_SNAPSHOTS"""
+    """CSV: united_orders/<run>/<period>/orders_and_offers_transactions.csv → UNITED_ORDERS_ORDERS_AND_OFFERS_TRANSACTIONS
+       (one table per report sheet / appendix).
+       JSONL: stock_snapshots/<run>/stocks.jsonl, orders_stats/<run>/<period>.jsonl, offer_mappings/... → one table per
+       endpoint, named after the directory (file names there carry the period, not the shape)."""
+    if file.suffix == ".jsonl":
+        return report_dir.upper()
     sheet = re.sub(r"[^a-z0-9]+", "_", file.stem.lower()).strip("_")
-    if report_dir == "stock_snapshots":
-        return "STOCK_SNAPSHOTS"
     return f"{report_dir}_{sheet}".upper()
 
 
 def read_any(file: pathlib.Path) -> pd.DataFrame:
     if file.suffix == ".jsonl":
-        df = pd.read_json(file, lines=True, dtype=str)
+        # Keep nested objects/arrays (items, commissions, stocks, offer…) as JSON text → parse_json() in staging.
+        rows = []
+        with file.open(encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    obj = json.loads(line)
+                    row = {k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
+                           for k, v in obj.items()}
+                    row["_raw_json"] = json.dumps(obj, ensure_ascii=False)   # whole record, for parse_json() in staging
+                    rows.append(row)
+        df = pd.DataFrame(rows)
+        df = df[sorted(df.columns)]          # optional keys appear in different orders across files
     else:
         df = pd.read_csv(file, dtype=str, sep=None, engine="python")   # sep=None: sniff ',' vs ';'
     df.columns = [re.sub(r"[^A-Za-z0-9]+", "_", c).strip("_").upper() for c in df.columns]
     df["_LOADED_AT"] = dt.datetime.now(dt.timezone.utc).isoformat()
     df["_SOURCE_FILE"] = str(file.relative_to(RAW_DIR))
-    return df.astype(str)
+    return df.where(df.notna(), None).astype(object)
 
 
 def main() -> None:
