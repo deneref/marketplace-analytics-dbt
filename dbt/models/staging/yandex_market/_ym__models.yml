@@ -63,12 +63,12 @@ models:
         data_tests: [unique, not_null]
       - name: order_id
         description: "Marketplace order id, as text (same as in stg_ym__orders)."
-        data_tests: [not_null]
-        # add when stg_ym__orders exists:
-        # - relationships:
-        #     arguments:
-        #       to: ref('stg_ym__orders')
-        #       field: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_ym__orders')
+                field: order_id
       - name: line_index
         description: "Position of the line in the ITEMS array: 0, 1, 2 …"
         data_tests: [not_null]
@@ -176,12 +176,12 @@ models:
         data_tests: [unique, not_null]
       - name: order_id
         description: "Marketplace order id, as text (same as in stg_ym__orders)."
-        data_tests: [not_null]
-        # add when stg_ym__orders exists:
-        # - relationships:
-        #     arguments:
-        #       to: ref('stg_ym__orders')
-        #       field: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_ym__orders')
+                field: order_id
       - name: fee_index
         description: "Position of the entry in the COMMISSIONS array; distinguishes repeated fee types."
         data_tests: [not_null]
@@ -222,12 +222,12 @@ models:
         data_tests: [unique, not_null]
       - name: order_id
         description: "Marketplace order id, as text (same as in stg_ym__orders)."
-        data_tests: [not_null]
-        # add when stg_ym__orders exists:
-        # - relationships:
-        #     arguments:
-        #       to: ref('stg_ym__orders')
-        #       field: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_ym__orders')
+                field: order_id
       - name: payment_index
         description: "Position in the PAYMENTS array at export time. Informational only — not part of the key, may change between exports."
       - name: payment_id
@@ -344,3 +344,70 @@ models:
       - name: market_category_name
         description: "Marketplace category (mapping.marketCategoryName), e.g. 'Рубашки' — the category to analyse by; present for every card."
         data_tests: [not_null]
+
+  - name: stg_ym__orders
+    description: >
+      Order-level fields of orders_stats: one row per marketplace order (2025-01 → today, no 90-day limit), latest
+      load wins. The nested arrays of the same RAW row live in their own staging models (order_lines,
+      order_line_events, order_fees, order_payments) and join back on order_id. Parent of fct_orders.
+    columns:
+      - name: order_id
+        description: "Marketplace order id (id), as text — the join key for every other orders_stats staging model."
+        data_tests: [unique, not_null]
+      - name: partner_order_id
+        description: "Order id as shown to the seller (partnerOrderId); equals order_id for this seller. Also the join key to goods_realization (PARTNER_ORDER_ID there)."
+        data_tests: [not_null]
+      - name: ordered_date
+        description: "Order creation date (creationDate). The 'as of' date for demand metrics; delivery/payout dates live in realization and payments."
+        data_tests: [not_null]
+      - name: status_updated_at
+        description: "Last status change (statusUpdateDate, ISO 8601 with +03:00 offset), timestamp_tz. Use it — not ordered_date — as the incremental watermark: statuses change weeks after the order."
+        data_tests: [not_null]
+      - name: order_status
+        description: >
+          Final order status. DELIVERED; CANCELLED_IN_DELIVERY = unredeemed (buyer did not collect);
+          CANCELLED_IN_PROCESSING / CANCELLED_BEFORE_PROCESSING = cancelled before shipment; RETURNED;
+          PARTIALLY_DELIVERED = some lines unredeemed/returned (see order_line_events); PICKUP / DELIVERY /
+          PROCESSING = still in flight.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - 'DELIVERED'
+                  - 'CANCELLED_IN_DELIVERY'
+                  - 'CANCELLED_IN_PROCESSING'
+                  - 'CANCELLED_BEFORE_PROCESSING'
+                  - 'RETURNED'
+                  - 'PARTIALLY_DELIVERED'
+                  - 'PICKUP'
+                  - 'DELIVERY'
+                  - 'PROCESSING'
+              config: {severity: warn}     # a new status is a heads-up, not a broken build
+      - name: payment_type
+        description: "PREPAID (paid at checkout) or POSTPAID (paid on receipt). Order-level — the reason unredeemed rate is an order metric, not a line metric."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['PREPAID', 'POSTPAID']
+      - name: buyer_type
+        description: "PERSON (all orders so far) or BUSINESS."
+      - name: currency
+        description: "Order currency — RUR for every order so far; amounts elsewhere are RUB."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['RUR']
+              config: {severity: warn}
+      - name: is_test_order
+        description: "Marketplace's test-order flag (fake). FALSE for every order so far; filter on it downstream anyway."
+        data_tests: [not_null]
+      - name: delivery_region_id
+        description: "Marketplace geo id of the delivery region (deliveryRegion.id), e.g. 213 = Москва."
+        data_tests: [not_null]
+      - name: delivery_region_name
+        description: "Delivery region name (deliveryRegion.name) — city/region label used for the regional cut."
+        data_tests: [not_null]
+      - name: subsidies_json
+        description: "Raw subsidies array kept as VARIANT: [{operationType: ACCRUAL|DEDUCTION, type: SUBSIDY|YANDEX_CASHBACK, amount}]. Present for ~70% of orders. Unnest in a stg_ym__order_subsidies model when the revenue base question is settled."
