@@ -508,3 +508,56 @@ models:
         description: "VAT amount, RUB — 0 for this seller."
       - name: redeemed_amount
         description: "For unredeemed/returned rows: amount actually redeemed/kept, RUB (REDEEMED_AMOUNT). NULL for other appendices."
+
+  - name: stg_ym__stock_levels
+    description: >
+      Daily stock snapshot (stock_snapshots) typed and flattened: one row per snapshot_date × sku × warehouse_id ×
+      stock_type, units = count. Offers listed at a warehouse with no stock ('[]' in RAW) are kept as one row with
+      stock_type NULL and units 0 (is_empty_stock = TRUE). Latest load per offer × warehouse × day wins. Stock types
+      are not additive (FIT = AVAILABLE + FREEZE) — int_stock_daily picks the types it needs; never sum across them.
+      Source of fct_inventory_daily and dim_warehouses.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [snapshot_date, sku, warehouse_id, stock_type]
+    columns:
+      - name: stock_level_key
+        description: "Surrogate key: snapshot_date + sku + warehouse_id + stock_type (NULL type gets the dbt_utils null placeholder, so empty rows are keyed too)."
+        data_tests: [unique, not_null]
+      - name: snapshot_date
+        description: "Date of the snapshot (added by ingest/yandex_market.py, one snapshot per day by cron)."
+        data_tests: [not_null]
+      - name: sku
+        description: "Seller's SKU (offerId) — the same value as sku in stg_ym__offers and stg_ym__order_lines."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_ym__offers')
+                field: sku
+              config: {severity: warn}
+      - name: warehouse_id
+        description: "Market warehouse id (FBY) the stock is held at; ~8 warehouses so far. Key of dim_warehouses."
+        data_tests: [not_null]
+      - name: stock_type
+        description: >
+          Stock bucket: FIT (sellable or reserved = AVAILABLE + FREEZE), AVAILABLE (sellable now), FREEZE (reserved
+          for orders), QUARANTINE, DEFECT, EXPIRED, UTILIZATION. NULL only for empty-stock rows. Open list — the
+          accepted_values test warns, not fails.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['FIT', 'AVAILABLE', 'FREEZE', 'QUARANTINE', 'DEFECT', 'EXPIRED', 'UTILIZATION']
+              config: {severity: warn}
+      - name: units
+        description: "Units in this bucket (count); 0 for empty-stock rows."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: is_empty_stock
+        description: "TRUE when RAW STOCKS was '[]' — the offer is listed at the warehouse but has no stock of any type."
+        data_tests: [not_null]
+      - name: stock_updated_at
+        description: "When the marketplace last updated the stock figure (updatedAt); NULL for empty-stock rows."
