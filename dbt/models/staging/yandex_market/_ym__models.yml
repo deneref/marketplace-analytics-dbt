@@ -263,3 +263,84 @@ models:
         description: "Id of the marketplace payout (paymentOrder) that transferred this payment to the seller. NULL until paid out."
       - name: payout_date
         description: "Date of that payout. NULL until paid out; the payout usually lands a few days after payment_date."
+
+  - name: stg_ym__offers
+    description: >
+      Daily catalogue export (offer_mappings) typed and flattened: one row per sku × snapshot_date. OFFER = the
+      seller's card (name, vendor, basic price, dimensions), MAPPING = the marketplace's view of it (marketSku,
+      model, category). Latest load per sku × day wins. Description, pictures, campaigns and media are left out on
+      purpose. Source of dim_products (latest snapshot) and of price/category history.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [sku, snapshot_date]
+    columns:
+      - name: offer_snapshot_key
+        description: "Surrogate key: sku + snapshot_date."
+        data_tests: [unique, not_null]
+      - name: sku
+        description: "Seller's SKU (offerId) — the same value as sku in stg_ym__order_lines and the cogs_by_sku seed."
+        data_tests: [not_null]
+      - name: snapshot_date
+        description: "Date of the catalogue export the row comes from (one export per day by the ingest cron)."
+        data_tests: [not_null]
+      - name: product_name
+        description: "Card name as the seller filled it in (name)."
+        data_tests: [not_null]
+      - name: vendor
+        description: "Brand (vendor) as filled in by the seller."
+      - name: vendor_code
+        description: "Seller's article (vendorCode); NULL for ~30% of cards."
+      - name: seller_category
+        description: "Category as the seller typed it (offer.category) — free text, NULL for ~20% of cards. Prefer market_category_name for analysis."
+      - name: product_type
+        description: "Card type (offer.type), e.g. DEFAULT; NULL for ~20% of cards."
+      - name: group_id
+        description: "Seller's grouping id (groupId) — links size/colour variants of one model."
+      - name: card_status
+        description: "Marketplace card status (cardStatus), e.g. HAS_CARD_CAN_UPDATE."
+      - name: is_archived
+        description: "TRUE when the seller archived the card (archived); FALSE when the flag is absent."
+        data_tests: [not_null]
+      - name: barcode
+        description: "First barcode of the card (barcodes[0])."
+      - name: basic_price
+        description: "Seller's base price at snapshot time (basicPrice.value), RUB. Changes over time — that is why the grain includes snapshot_date."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: price_before_discount
+        description: "Strike-through price (basicPrice.discountBase), RUB; NULL when no discount is shown."
+      - name: price_currency
+        description: "Currency of basic_price (basicPrice.currencyId) — RUR for every card so far."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['RUR']
+              config: {severity: warn}
+      - name: price_updated_at
+        description: "When the seller last changed the base price (basicPrice.updatedAt)."
+      - name: length_cm
+        description: "Package length (weightDimensions.length), cm."
+      - name: width_cm
+        description: "Package width (weightDimensions.width), cm."
+      - name: height_cm
+        description: "Package height (weightDimensions.height), cm."
+      - name: weight_kg
+        description: "Package weight (weightDimensions.weight), kg. Candidate base for delivery-fee allocation."
+      - name: market_sku
+        description: "Marketplace SKU id (mapping.marketSku) — same value as market_sku in stg_ym__order_lines."
+        data_tests: [not_null]
+      - name: market_sku_name
+        description: "Marketplace's name of the SKU (mapping.marketSkuName)."
+      - name: market_model_id
+        description: "Marketplace model id (mapping.marketModelId) — groups SKUs of one model on the marketplace side."
+      - name: market_model_name
+        description: "Marketplace model name (mapping.marketModelName)."
+      - name: market_category_id
+        description: "Marketplace category id (mapping.marketCategoryId)."
+      - name: market_category_name
+        description: "Marketplace category (mapping.marketCategoryName), e.g. 'Рубашки' — the category to analyse by; present for every card."
+        data_tests: [not_null]
