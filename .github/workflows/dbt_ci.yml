@@ -11,7 +11,8 @@ jobs:
     env:
       SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
       SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-      SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+      SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      SNOWFLAKE_ROLE: SYSADMIN
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,4 +20,4 @@ jobs:
       - run: pip install -r requirements.txt
       - run: mkdir -p ~/.dbt && cp dbt/profiles.example.yml ~/.dbt/profiles.yml
       - run: cd dbt && dbt deps
-      - run: cd dbt && dbt build --vars '{"use_demo_seeds": true}' --target dev
+      - run: cd dbt && dbt build --vars '{"use_demo_seeds": true}' --target ci

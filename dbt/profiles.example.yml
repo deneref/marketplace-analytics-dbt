@@ -1,15 +1,29 @@
-# Copy to ~/.dbt/profiles.yml — never commit the real one.
+# Copy to ~/.dbt/profiles.yml — never commit the real one. Values come from environment variables (see .env.example);
+# dbt does not read .env itself: `set -a; source .env; set +a` before running dbt.
+#
+# Auth = key pair on a SERVICE user (Snowflake enforces MFA on human/password users, which breaks dbt, the loader,
+# CI and the Looker Studio connector). See README "Snowflake setup".
 marketplace_analytics:
   target: dev
   outputs:
-    dev:
+    dev:                              # your laptop: real data, schema DBT_DEV
       type: snowflake
       account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
       user: "{{ env_var('SNOWFLAKE_USER') }}"
-      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
-      role: ACCOUNTADMIN          # trial default; narrow in a real setup
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
       warehouse: DBT_WH
       database: MARKETPLACE
       schema: DBT_DEV
       threads: 4
       client_session_keep_alive: false
+    ci:                               # GitHub Actions: synthetic seeds, schema DBT_CI — never touches DBT_DEV
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      private_key: "{{ env_var('SNOWFLAKE_PRIVATE_KEY', '') }}"   # PEM text from a GitHub secret
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
+      warehouse: DBT_WH
+      database: MARKETPLACE
+      schema: DBT_CI
+      threads: 4

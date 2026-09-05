@@ -26,6 +26,7 @@ seller API (async reports, JSON) ──ingest/──▶ Snowflake RAW (as-is, VA
 - **Fee allocation** (`int_order_items_enriched`): marketplace fees arrive per order; they are allocated to order lines proportionally to line value, and a singular test asserts the allocation neither loses nor creates money.
 - **Reconciliation test** (`tests/assert_turnover_matches_marketplace.sql`): my turnover vs the marketplace's report, ±10 % per SKU. Systematic differences and why: <!-- TODO: 2–3 bullets after you see the numbers -->
 - **Source freshness** on every raw table; **source-or-seed switch** (`macros/source_or_seed.sql`) so CI runs on synthetic data.
+- **Raw layer fully documented, from one place** (`scripts/gen_sources_yml.py`): all ~400 raw columns across 12 tables are described in the dbt sources yaml (descriptions from the seller-API spec and report docs); the column lists are derived from the downloaded files, so a new report column cannot go undocumented silently, and `load_to_snowflake.py` pushes the same descriptions into Snowflake as table/column comments.
 
 ## Dashboard
 
@@ -42,6 +43,8 @@ dbt docs generate && dbt docs serve
 ```
 
 With API access: `python ingest/yandex_market.py --report united-orders --from 2025-01-01 --to 2025-12-31`, then `python ingest/load_to_snowflake.py`, then `dbt build`.
+
+Raw docs: `python scripts/gen_sources_yml.py` regenerates `dbt/models/staging/yandex_market/_ym__sources.yml` from the files in `data/raw/` (add descriptions for new columns in the script; `--check` fails on undocumented ones); `python ingest/load_to_snowflake.py --comments-only` re-applies them to Snowflake.
 
 ## Runs on
 

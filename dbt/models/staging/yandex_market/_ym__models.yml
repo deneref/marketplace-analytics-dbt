@@ -2,26 +2,45 @@ version: 2
 
 models:
   - name: stg_ym__order_items
-    description: "One row per order line (order × SKU), typed and de-duplicated by latest load."
+    description: >
+      Sheet orders_and_offers_transactions of the united-orders report, typed and de-duplicated by latest load.
+      One row per order × SKU × offer status (a partially unredeemed multi-unit order is split into two rows).
     columns:
       - name: order_item_key
-        description: "Surrogate key: order_id + sku."
+        description: "Surrogate key: order_id + sku + offer_status."
         data_tests: [unique, not_null]
       - name: order_id
         data_tests: [not_null]
       - name: sku
         data_tests: [not_null]
-      - name: ordered_at
+      - name: ordered_date
         data_tests: [not_null]
-      - name: order_status
-        description: "Marketplace order status. TODO: fill accepted values from real data."
+      - name: offer_status
+        description: "Line-level status as exported by the marketplace (English labels)."
         data_tests:
           - accepted_values:
               arguments:
-                values: ['DELIVERED', 'CANCELLED', 'RETURNED', 'PROCESSING', 'SHIPPED']
-              config: {severity: warn}
-      - name: units
+                values:
+                  - 'Delivered to buyer'
+                  - 'Unredeemed received in warehouse'
+                  - 'Unredeemed in transit'
+                  - 'Unredeemed received'
+                  - 'Unredeemed lost'
+                  - 'Cancelled'
+                  - 'Return received in warehouse'
+                  - 'Return in transit'
+                  - 'Return issued'
+                  - 'Shipped'
+                  - 'Issued'
+              config: {severity: warn}     # a new status is a heads-up, not a broken build
+      - name: units_shipped
+        description: "TRANSFERRED_FOR_DELIVERY — units handed to delivery for this line."
         data_tests:
           - dbt_utils.accepted_range:
               arguments:
-                min_value: 1
+                min_value: 0
+      - name: unit_price
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0

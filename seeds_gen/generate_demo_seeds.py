@@ -5,16 +5,18 @@ Generate synthetic demo data with the same shape as the RAW tables, so the whole
 Writes: dbt/seeds/demo_united_orders_orders.csv, demo_united_orders_services.csv,
         demo_goods_turnover.csv, demo_stock_snapshots.csv, demo_cogs_by_sku.csv
 
-Column names mirror ingest/load_to_snowflake.py normalisation (UPPER_SNAKE). Adjust once the real
-CSV headers are known — keep the two in sync.
+Column names = the real report headers (verified against the first download, 2026-09-03), restricted to the
+columns staging actually uses. Keep in sync with dbt/models/staging/yandex_market/_ym__sources.yml.
 """
 from __future__ import annotations
 
 import csv
+import json
 import datetime as dt
 import math
 import pathlib
 import random
+import zlib
 
 random.seed(42)
 OUT = pathlib.Path(__file__).resolve().parents[1] / "dbt" / "seeds"
@@ -22,8 +24,11 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 START, END = dt.date(2025, 1, 1), dt.date(2025, 12, 31)
 CATEGORIES = {"t-shirts": 12, "hoodies": 8, "caps": 5, "accessories": 5}
-WAREHOUSES = ["WH-MSK-1", "WH-SPB-1"]
-STATUSES = ["DELIVERED"] * 85 + ["CANCELLED"] * 8 + ["RETURNED"] * 7
+WAREHOUSES = [147, 172]                       # numeric warehouse ids, like the stocks endpoint
+REGIONS = ["Москва", "Санкт-Петербург", "Казань", "Новосибирск", "Екатеринбург"]
+# (offer_status on the order-line sheet, order_status on the per-order services sheet)
+STATUSES = [("Delivered to buyer", "Delivered")] * 85 + [("Cancelled", "Canceled during processing")] * 8 \
+         + [("Return received in warehouse", "Full return accepted at warehouse")] * 7
 LOADED_AT = "2026-01-05T10:00:00+00:00"
 
 # --- products -------------------------------------------------------------------------------------
@@ -57,31 +62,46 @@ while d <= END:
     for _ in range(n_orders):
         order_seq += 1
         oid = f"ORD-{order_seq}"
-        status = random.choice(STATUSES)
+        offer_status, order_status = random.choice(STATUSES)
         created = dt.datetime.combine(d, dt.time(random.randint(8, 22), random.randint(0, 59)))
+        delivered = d + dt.timedelta(days=random.randint(1, 4))
         lines = random.choices(skus, weights=[s["popularity"] for s in skus], k=random.choice([1, 1, 1, 2, 2, 3]))
         order_total = 0.0
-        region = random.choice(["Moscow", "Saint Petersburg", "Kazan", "Novosibirsk", "Yekaterinburg"])
+        region = random.choice(REGIONS)
         for s in lines:
             qty = random.choice([1, 1, 1, 2])
             discount = round(s["price"] * random.choice([0, 0, 0.05, 0.10, 0.15]), 2)
             paid = round((s["price"] - discount) * qty, 2)
-            refund = paid if status == "RETURNED" else 0.0
-            if status != "CANCELLED":
+            refund = paid if order_status.startswith("Full return") else ""
+            if not order_status.startswith("Canceled"):
                 order_total += paid
             orders.append({
-                "ORDER_ID": oid, "ORDER_CREATED_AT": created.isoformat(sep=" "), "ORDER_STATUS": status,
-                "OFFER_ID": s["sku"], "PRODUCT_NAME": s["name"], "CATEGORY": s["category"],
-                "QUANTITY": qty, "PRICE": s["price"], "DISCOUNT": discount * qty,
-                "PAID_BY_CUSTOMER": paid, "REFUND_AMOUNT": refund,
-                "DELIVERY_REGION": region,
+                "ORDER_ID": oid, "CREATION_DATE": created.strftime("%d.%m.%Y"), "ORDER_TYPE": "Sale to individual",
+                "SHOP_SKU": s["sku"], "OFFER_NAME": s["name"],
+                "BILLING_PRICE": s["price"], "TRANSFERRED_FOR_DELIVERY": qty,
+                "DELIVERED_OR_RETURNED": qty if not order_status.startswith("Canceled") else 0,
+                "DELIVERY_DATE": delivered.strftime("%d.%m.%Y") if not order_status.startswith("Canceled") else "",
+                "OFFER_STATUS": offer_status,
+                "STATUS_CHANGED": (created + dt.timedelta(days=random.randint(1, 5))).strftime("%Y-%m-%d %H:%M:%S"),
+                "SHIPMENT_WAREHOUSE": "Яндекс.Маркет (Софьино)", "DELIVERY_REGION": region,
+                "BUYER_PAYMENT_AMOUNT": paid if not order_status.startswith("Canceled") else "",
+                "REFUND_BUYER_PAYMENT_AMOUNT": refund,
                 "_LOADED_AT": LOADED_AT, "_SOURCE_FILE": "demo",
             })
-        if status != "CANCELLED":
-            for svc, share in (("COMMISSION", 0.15), ("LOGISTICS", 0.06), ("PAYMENT_PROCESSING", 0.013)):
-                services.append({"ORDER_ID": oid, "SERVICE_TYPE": svc,
-                                 "SERVICE_AMOUNT": round(-order_total * share, 2),
-                                 "_LOADED_AT": LOADED_AT, "_SOURCE_FILE": "demo"})
+        if not order_status.startswith("Canceled"):
+            fees = {"SALE_COMMISSION": 0.15, "BUYER_DELIVERY": 0.05, "CROSSREGIONAL_DELIVERY": 0.01,
+                    "BUYER_PAYMENT_ACCEPT": 0.005, "BUYER_PAYMENT_TRANSFER": 0.008, "LOYALTY_PROGRAM": 0.02,
+                    "BOOST": 0.0, "INSTALLMENT": 0.0, "WAREHOUSE_PROCESSING": 0.0}
+            amounts = {k: round(order_total * v, 2) for k, v in fees.items()}
+            total_fee = round(sum(amounts.values()), 2)
+            services.append({
+                "ORDER_ID": oid, "ORDER_STATUS": order_status, "CREATION_DATE": created.strftime("%d.%m.%Y"),
+                "ORDER_TYPE": "Sale to individual",
+                "SUMMARY_COMMISSION": total_fee, "SUM_BILLING_PRICE_OF_ITEMS": round(order_total, 2),
+                "INCOME_WITHOUT_SERVICES": round(order_total - total_fee, 2),
+                "BUYER_PAYMENT": round(order_total, 2), "BUYER_PAYMENT_STATUS": "Transferred",
+                **amounts, "_LOADED_AT": LOADED_AT, "_SOURCE_FILE": "demo",
+            })
     d += dt.timedelta(days=1)
 
 # --- stock snapshots (daily) & marketplace turnover report (monthly) ------------------------------
@@ -89,9 +109,9 @@ stock = {(w, s["sku"]): random.randint(20, 120) for w in WAREHOUSES for s in sku
 snapshots, turnover = [], []
 sold_by_day: dict[tuple[dt.date, str], int] = {}
 for o in orders:
-    if o["ORDER_STATUS"] != "CANCELLED":
-        key = (dt.date.fromisoformat(o["ORDER_CREATED_AT"][:10]), o["OFFER_ID"])
-        sold_by_day[key] = sold_by_day.get(key, 0) + int(o["QUANTITY"])
+    if o["OFFER_STATUS"] != "Cancelled":
+        key = (dt.datetime.strptime(o["CREATION_DATE"], "%d.%m.%Y").date(), o["SHOP_SKU"])
+        sold_by_day[key] = sold_by_day.get(key, 0) + int(o["TRANSFERRED_FOR_DELIVERY"])
 
 d = START
 month_sales: dict[str, list[int]] = {s["sku"]: [] for s in skus}
@@ -101,8 +121,11 @@ while d <= END:
         stock[(w, sku)] = max(0, qty - sold)
         if d.day == 1 or stock[(w, sku)] < 10:          # monthly replenishment + safety restock
             stock[(w, sku)] += random.randint(30, 80)
-        snapshots.append({"SNAPSHOT_DATE": d.isoformat(), "WAREHOUSE_ID": w, "SKU": sku,
-                          "COUNT": stock[(w, sku)], "STOCK_TYPE": "AVAILABLE",
+        # same shape as the stocks endpoint JSONL: `stocks` is a JSON array of {type, count}
+        snapshots.append({"SNAPSHOT_DATE": d.isoformat(), "WAREHOUSE_ID": w, "OFFERID": sku,
+                          "STOCKS": json.dumps([{"type": "FIT", "count": stock[(w, sku)]},
+                                                {"type": "AVAILABLE", "count": stock[(w, sku)]}]),
+                          "UPDATEDAT": f"{d.isoformat()}T06:00:00+03:00",
                           "_LOADED_AT": LOADED_AT, "_SOURCE_FILE": "demo"})
     for s in skus:
         month_sales[s["sku"]].append(sold_by_day.get((d, s["sku"]), 0))
@@ -112,15 +135,20 @@ while d <= END:
             units = sum(month_sales[s["sku"]][-d.day:])
             avg_daily = units / d.day
             total_stock = sum(stock[(w, s["sku"])] for w in WAREHOUSES)
-            turnover.append({
-                "REPORT_DATE": d.isoformat(), "WAREHOUSE": "ALL", "SKU": s["sku"], "PRODUCT_NAME": s["name"],
-                "CATEGORY": s["category"], "STOCK_UNITS": total_stock,
-                "AVG_DAILY_SALES_UNITS": round(avg_daily, 3),
-                "TURNOVER_DAYS": round(total_stock / avg_daily, 1) if avg_daily else "",
-                "STORAGE_FEE": round(total_stock * 1.2 * d.day, 2),
-                "RECOMMENDATION": "OK" if avg_daily and total_stock / avg_daily < 60 else "REDUCE_STOCK",
-                "_LOADED_AT": LOADED_AT, "_SOURCE_FILE": "demo",
-            })
+            for w, macro in zip(WAREHOUSES, ("Москва", "Санкт-Петербург")):
+                wh_stock = stock[(w, s["sku"])]
+                wh_avg = avg_daily / len(WAREHOUSES)
+                turnover.append({
+                    # no report-date column in the real file: the date lives in the path, i.e. in _SOURCE_FILE
+                    "MACROREGION_NAME": macro, "CATEGORY": "Одежда, обувь и аксессуары",
+                    "SHOP_SKU": s["sku"], "MARKET_SKU": 100000000000 + zlib.crc32(s["sku"].encode()) % 10**9, "OFFER_NAME": s["name"],
+                    "LENGTH": 350, "WIDTH": 250, "HEIGHT": 40, "VOLUME": 3.5,
+                    "TURNOVER": round(wh_stock / wh_avg, 6) if wh_avg else "Нет продаж",
+                    "AMOUNT": "-", "MARKET_RECOMMENDATION": "",
+                    "AVG_SOLD_VOLUME": round(wh_avg * 3.5, 6), "AVG_SOLD_ITEMS": round(wh_avg, 6),
+                    "AVG_SOLD_VOLUME_ON_STOCK": round(wh_stock * 3.5), "ITEMS_ON_STOCK": wh_stock,
+                    "_LOADED_AT": LOADED_AT, "_SOURCE_FILE": f"demo/goods_turnover/{d.isoformat()}/turnover.csv",
+                })
     d = next_day
 
 cogs = [{"SKU": s["sku"], "VALID_FROM": START.isoformat(), "UNIT_COST": s["cost"]} for s in skus]

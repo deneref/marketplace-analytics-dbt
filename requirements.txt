@@ -4,3 +4,4 @@ snowflake-connector-python[pandas]>=3.10
 pandas>=2.2
 requests>=2.32
 python-dotenv>=1.0
+pyyaml>=6.0            # ingest/load_to_snowflake.py + scripts/gen_sources_yml.py read/write the dbt sources yaml
