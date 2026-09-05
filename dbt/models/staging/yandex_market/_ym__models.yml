@@ -5,15 +5,20 @@ models:
     description: >
       Sheet orders_and_offers_transactions of the united-orders report, typed and de-duplicated by latest load.
       One row per order × SKU × offer status (a partially unredeemed multi-unit order is split into two rows).
+      The report covers only the last 90 days without a paid subscription — kept as a fee benchmark for
+      stg_ym__order_fees / fct_order_fees, not as the order source (that is orders_stats → stg_ym__order_lines).
     columns:
       - name: order_item_key
         description: "Surrogate key: order_id + sku + offer_status."
         data_tests: [unique, not_null]
       - name: order_id
+        description: "Marketplace order id, as text."
         data_tests: [not_null]
       - name: sku
+        description: "Seller's SKU (SHOP_SKU)."
         data_tests: [not_null]
       - name: ordered_date
+        description: "Order creation date (CREATION_DATE, DD.MM.YYYY in the source)."
         data_tests: [not_null]
       - name: offer_status
         description: "Line-level status as exported by the marketplace (English labels)."
@@ -40,6 +45,7 @@ models:
               arguments:
                 min_value: 0
       - name: unit_price
+        description: "BILLING_PRICE — line price used by the marketplace for fee calculation, RUB."
         data_tests:
           - dbt_utils.accepted_range:
               arguments:
@@ -48,34 +54,59 @@ models:
   - name: stg_ym__order_lines
     description: >
       ITEMS array of orders_stats unnested: one row per order × line (array position). Latest load per order wins,
-      de-duplicated before flattening. Prices pivoted from the nested prices array. Order-level attributes are in
-      stg_ym__orders; line status history is in stg_ym__order_line_events.
+      de-duplicated before flattening. The nested prices array is pivoted into price_* columns. Order-level
+      attributes (status, payment type, region) are in stg_ym__orders; what happened to the units after shipment
+      (unredeemed / returned) is in stg_ym__order_line_events.
     columns:
       - name: order_line_key
-        description: "Surrogate key: order_id + line_index (array position). Two lines can share an SKU, so sku is NOT part of the key."
+        description: "Surrogate key: order_id + line_index (array position). Two lines can share an SKU, so sku is NOT part of the key. Depends on array order at export time — items[] carries no id of its own."
         data_tests: [unique, not_null]
       - name: order_id
-        data_tests:
-          - not_null
-          - relationships:
-              arguments:
-                to: ref('stg_ym__orders')
-                field: order_id
-      - name: sku
+        description: "Marketplace order id, as text (same as in stg_ym__orders)."
         data_tests: [not_null]
+        # add when stg_ym__orders exists:
+        # - relationships:
+        #     arguments:
+        #       to: ref('stg_ym__orders')
+        #       field: order_id
+      - name: line_index
+        description: "Position of the line in the ITEMS array: 0, 1, 2 …"
+        data_tests: [not_null]
+      - name: sku
+        description: "Seller's SKU (shopSku) — the key of dim_products and of the cogs_by_sku seed."
+        data_tests: [not_null]
+      - name: market_sku
+        description: "Marketplace's own SKU id (marketSku) for the same offer; informational."
+      - name: product_name
+        description: "Offer name as shown on the marketplace at order time (offerName)."
       - name: units_ordered
+        description: "Units of this SKU in the line (count). Delivered units = units_ordered − rejected − returned, see int_order_lines_status."
         data_tests:
           - not_null
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 1
+      - name: warehouse_id
+        description: "Marketplace warehouse the line shipped from (warehouse.id) — key of dim_warehouses."
+        data_tests: [not_null]
+      - name: warehouse_name
+        description: "Warehouse name as exported (warehouse.name), e.g. 'Яндекс.Маркет (Софьино)'."
+      - name: bid_fee
+        description: "Boost bid on this line (bidFee), RUB. Not a charged fee — the charged boost is fee_type AUCTION_PROMOTION in stg_ym__order_fees."
+      - name: price_buyer_per_item
+        description: "Price the buyer paid per unit (prices[type=BUYER].costPerItem), RUB, after all discounts."
       - name: price_buyer_total
+        description: "Buyer price × units (prices[type=BUYER].total), RUB. Candidate revenue base — to be confirmed against goods_realization_delivered."
         data_tests:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
-      - name: warehouse_id
-        data_tests: [not_null]
+      - name: price_marketplace_total
+        description: "Marketplace price × units (prices[type=MARKETPLACE].total), RUB. Meaning vs price_buyer_total and subsidies is an open question — do not use as revenue until reconciled."
+      - name: cashback_total
+        description: "Cashback (Plus points) applied on the line (prices[type=CASHBACK].total), RUB. NULL when none."
+      - name: details_json
+        description: "Raw items[].details array kept as VARIANT for traceability; unnested in stg_ym__order_line_events — do not parse it downstream."
 
   - name: stg_ym__order_line_events
     description: >
@@ -84,7 +115,7 @@ models:
       Latest load per order wins, de-duplicated before flattening.
     columns:
       - name: order_line_event_key
-        description: "Surrogate key: order_id + line_index + event_index. Two events of one line can be identical (same status, same date) — the array index keeps them apart."
+        description: "Surrogate key: order_id + line_index + event_index. Two events of one line can be identical (same status, same date) — the array index keeps them apart. Depends on array order at export time."
         data_tests: [unique, not_null]
       - name: order_line_key
         description: "Same key as in stg_ym__order_lines — join events to lines on it."
@@ -94,7 +125,17 @@ models:
               arguments:
                 to: ref('stg_ym__order_lines')
                 field: order_line_key
+      - name: order_id
+        description: "Marketplace order id, as text."
+        data_tests: [not_null]
+      - name: line_index
+        description: "Position of the parent line in the ITEMS array."
+        data_tests: [not_null]
+      - name: event_index
+        description: "Position of the event in the line's details array."
+        data_tests: [not_null]
       - name: event_status
+        description: "REJECTED — the buyer did not collect the unit (unredeemed); RETURNED — the buyer returned it after delivery."
         data_tests:
           - not_null
           - accepted_values:
@@ -102,6 +143,7 @@ models:
                 values: ['REJECTED', 'RETURNED']
               config: {severity: warn}     # a new event type is a heads-up, not a broken build
       - name: event_units
+        description: "Units affected by this event (itemCount). Sum per line ≤ units_ordered."
         data_tests:
           - not_null
           - dbt_utils.accepted_range:
@@ -118,8 +160,7 @@ models:
                 at_least: 0.85
               config: {severity: warn}
       - name: stock_type
-        description: "Stock the unit was returned into (FIT, DEFECT, …). NULL whenever event_date is NULL."
-
+        description: "Stock the unit was returned into (FIT = sellable, DEFECT, …). NULL whenever event_date is NULL."
 
   - name: stg_ym__order_fees
     description: >
@@ -134,6 +175,7 @@ models:
         description: "Surrogate key: order_id + fee_index (array position)."
         data_tests: [unique, not_null]
       - name: order_id
+        description: "Marketplace order id, as text (same as in stg_ym__orders)."
         data_tests: [not_null]
         # add when stg_ym__orders exists:
         # - relationships:
@@ -162,3 +204,62 @@ models:
       - name: fee_amount
         description: "Fee amount in RUB, number(18,2). Can be negative (reversal) — no lower-bound test on purpose."
         data_tests: [not_null]
+
+  - name: stg_ym__order_payments
+    description: >
+      PAYMENTS array of orders_stats unnested: one row per order × payment. A payment is money moving between the
+      buyer and the marketplace: PAYMENT rows and REFUND rows are both positive — net cash from the buyer is
+      sum(PAYMENT) − sum(REFUND), never a plain sum. paymentOrder (payout_id / payout_date) is the marketplace's
+      transfer of that money to the seller and is NULL until the payout happens (~25% of rows on 2026-09-05).
+      Amounts in RUB. Latest load per order wins, de-duplicated before flattening.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_id, payment_id]
+    columns:
+      - name: order_payment_key
+        description: "Surrogate key: order_id + payment_id. payment_id is unique within an order, so the key does not depend on array order (unlike fees/events, which have no id of their own)."
+        data_tests: [unique, not_null]
+      - name: order_id
+        description: "Marketplace order id, as text (same as in stg_ym__orders)."
+        data_tests: [not_null]
+        # add when stg_ym__orders exists:
+        # - relationships:
+        #     arguments:
+        #       to: ref('stg_ym__orders')
+        #       field: order_id
+      - name: payment_index
+        description: "Position in the PAYMENTS array at export time. Informational only — not part of the key, may change between exports."
+      - name: payment_id
+        description: "Marketplace payment id, as text."
+        data_tests: [not_null]
+      - name: payment_type
+        description: "PAYMENT — buyer paid; REFUND — money returned to the buyer (unredeemed or returned goods). Both stored as positive amounts."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['PAYMENT', 'REFUND']
+              config: {severity: warn}     # a new payment type is a heads-up, not a broken build
+      - name: payment_source
+        description: "BUYER — paid by the buyer directly; SPLIT — paid via the marketplace's instalment service (Split)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['BUYER', 'SPLIT']
+              config: {severity: warn}
+      - name: payment_amount
+        description: "Amount in RUB, number(18,2). Always ≥ 0 in the source; a negative value would be a new behaviour worth knowing about."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: payment_date
+        description: "Date the payment/refund was registered by the marketplace."
+        data_tests: [not_null]
+      - name: payout_id
+        description: "Id of the marketplace payout (paymentOrder) that transferred this payment to the seller. NULL until paid out."
+      - name: payout_date
+        description: "Date of that payout. NULL until paid out; the payout usually lands a few days after payment_date."
