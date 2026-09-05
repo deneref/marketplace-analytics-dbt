@@ -121,3 +121,44 @@ models:
         description: "Stock the unit was returned into (FIT, DEFECT, …). NULL whenever event_date is NULL."
 
 
+  - name: stg_ym__order_fees
+    description: >
+      COMMISSIONS array of orders_stats unnested: one row per order × commission entry (array position).
+      The same fee type repeats within an order (DELIVERY_TO_CUSTOMER in particular), so the grain is the array
+      position, not the fee type — sum by type downstream. Amounts are in RUB (every order carries currency = RUR);
+      negative amounts are fee reversals/corrections and must be summed as-is, never filtered.
+      Latest load per order wins, de-duplicated before flattening. Unallocated truth for fct_order_fees;
+      the per-line allocation lives in int_order_lines_with_fees.
+    columns:
+      - name: order_fee_key
+        description: "Surrogate key: order_id + fee_index (array position)."
+        data_tests: [unique, not_null]
+      - name: order_id
+        data_tests: [not_null]
+        # add when stg_ym__orders exists:
+        # - relationships:
+        #     arguments:
+        #       to: ref('stg_ym__orders')
+        #       field: order_id
+      - name: fee_index
+        description: "Position of the entry in the COMMISSIONS array; distinguishes repeated fee types."
+        data_tests: [not_null]
+      - name: fee_type
+        description: "Marketplace commission type as exported (FEE = sale commission, AUCTION_PROMOTION = boost, AGENCY = payment acceptance, …)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - 'FEE'
+                  - 'DELIVERY_TO_CUSTOMER'
+                  - 'AGENCY'
+                  - 'PAYMENT_TRANSFER'
+                  - 'AUCTION_PROMOTION'
+                  - 'CROSSREGIONAL_DELIVERY'
+                  - 'RETURN_PROCESSING'
+                  - 'LOYALTY_PARTICIPATION_FEE'
+              config: {severity: warn}     # a new fee type is a heads-up, not a broken build
+      - name: fee_amount
+        description: "Fee amount in RUB, number(18,2). Can be negative (reversal) — no lower-bound test on purpose."
+        data_tests: [not_null]
