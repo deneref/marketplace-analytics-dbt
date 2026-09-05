@@ -411,3 +411,100 @@ models:
         data_tests: [not_null]
       - name: subsidies_json
         description: "Raw subsidies array kept as VARIANT: [{operationType: ACCRUAL|DEDUCTION, type: SUBSIDY|YANDEX_CASHBACK, amount}]. Present for ~70% of orders. Unnest in a stg_ym__order_subsidies model when the revenue base question is settled."
+
+  - name: stg_ym__realization_lines
+    description: >
+      The five appendices of the monthly goods-realization report ("Отчёт по реализации") unioned into one event
+      table: one row per report_month × event_type × order line. event_type = shipped | delivered | unredeemed |
+      returned | lost; event_units and event_date are the appendix-specific unit count and date, everything else
+      is shared. This is the accounting truth for revenue (price_after_discount on delivered) — fct_sales_daily
+      reconciles against it — and its event dates are the warehouse-side dates for unredeemed/returned units.
+      No 90-day limit: 2025-01 → 2026-08 loaded. Amounts in RUB, "Без НДС" for this seller.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [report_month, event_type, order_id, sku]
+    columns:
+      - name: realization_line_key
+        description: "Surrogate key: report_month + event_type + order_id + sku."
+        data_tests: [unique, not_null]
+      - name: report_month
+        description: "Report month 'YYYY-MM' — the accounting period the row belongs to (not necessarily the month of ordered_date)."
+        data_tests: [not_null]
+      - name: event_type
+        description: "Which appendix the row comes from: shipped (handed to delivery), delivered, unredeemed (came back uncollected), returned (returned after delivery), lost (lost in delivery, compensated by the marketplace)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['shipped', 'delivered', 'unredeemed', 'returned', 'lost']
+      - name: order_id
+        description: "PARTNER_ORDER_ID as text — equals stg_ym__orders.order_id. The report's own ORDER_ID column is not used (exported in scientific notation)."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_ym__orders')
+                field: order_id
+              config: {severity: warn}     # realization can mention orders older than the orders_stats backfill
+      - name: sku
+        description: "Seller's SKU (SHOP_SKU)."
+        data_tests: [not_null]
+      - name: warehouse_sku
+        description: "SKU as labelled in the marketplace warehouse (WAREHOUSE_SKU); can differ from sku for old cards."
+      - name: product_name
+        description: "Offer name as printed in the report."
+      - name: order_type
+        description: "'Продажа физлицу' for every row so far (B2C)."
+      - name: payment_method
+        description: "Payment method label as printed: Предоплата, При получении, Яндекс.Сплит (предоплата), Постоплатный Сплит. Maps to stg_ym__orders.payment_type (PREPAID/POSTPAID) and payment_source (SPLIT)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Предоплата', 'При получении', 'Яндекс.Сплит (предоплата)', 'Постоплатный Сплит']
+              config: {severity: warn}
+      - name: vat_rate
+        description: "VAT label — 'Без НДС' for this seller, so total_vat is 0."
+      - name: ordered_date
+        description: "Order date (ORDER_DATE)."
+        data_tests: [not_null]
+      - name: shipped_date
+        description: "Date handed to delivery (SHIPPED_DATE)."
+      - name: delivered_date
+        description: "Delivery date (DELIVERED_DATE); NULL for rows never delivered."
+      - name: event_date
+        description: "Date of the event this row records: shipped_date / delivered_date / unredeemed received / return received / lost received. The date basis for month-level reconciliation."
+        data_tests:
+          - not_null:
+              config: {severity: warn}
+      - name: event_units
+        description: "Units the event applies to (UNITS_SHIPPED / UNITS_DELIVERED / UNITS_UNREDEEMED / UNITS_RETURNED)."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: price_before_discount
+        description: "Unit price before discounts, RUB."
+      - name: discount_marketplace_promo
+        description: "Unit discount funded by the marketplace's promo, RUB."
+      - name: discount_sber_spasibo
+        description: "Unit discount paid with SberSpasibo points, RUB."
+      - name: discount_yandex_plus
+        description: "Unit discount paid with Yandex Plus points, RUB."
+      - name: price_after_discount
+        description: "Unit price after all discounts, RUB — the seller's realization price per unit."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: total_before_discount
+        description: "price_before_discount × units, RUB."
+      - name: total_discount
+        description: "Sum of the three discounts × units, RUB."
+      - name: total_after_discount
+        description: "price_after_discount × units, RUB — the revenue figure to reconcile fct_sales_daily against (delivered rows)."
+      - name: total_vat
+        description: "VAT amount, RUB — 0 for this seller."
+      - name: redeemed_amount
+        description: "For unredeemed/returned rows: amount actually redeemed/kept, RUB (REDEEMED_AMOUNT). NULL for other appendices."
