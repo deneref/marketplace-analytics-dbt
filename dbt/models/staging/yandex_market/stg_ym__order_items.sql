@@ -10,7 +10,7 @@ with src as (
 
 renamed as (
 
-    -- Real header of sheet orders_and_offers_transactions (verified 2026-09-03).
+    -- Real header of sheet orders_and_offers_transactions.
     -- One row per order × SKU × offer status; unit counts live in TRANSFERRED_FOR_DELIVERY / DELIVERED_OR_RETURNED.
     select
         order_id::varchar                                   as order_id,
