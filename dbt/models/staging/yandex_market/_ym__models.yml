@@ -561,3 +561,75 @@ models:
         data_tests: [not_null]
       - name: stock_updated_at
         description: "When the marketplace last updated the stock figure (updatedAt); NULL for empty-stock rows."
+
+  - name: stg_ym__turnover_report
+    description: >
+      Marketplace's own goods-turnover report (goods_turnover) typed: one row per report_date × sku × cluster_name.
+      report_date is cut out of _source_file (…/<report_date>/turnover.csv) — the CSV has no date column. Latest
+      load per sku × cluster × date wins. TURNOVER 'Нет продаж' → turnover_days NULL + has_sales FALSE; AMOUNT '-' →
+      storage_amount NULL. Reconciliation benchmark for turnover computed from stock_levels + order_lines
+      (assert_turnover_matches_marketplace, ±10%); not a source for marts on its own.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [report_date, sku, cluster_name]
+    columns:
+      - name: turnover_report_key
+        description: "Surrogate key: report_date + sku + cluster_name."
+        data_tests: [unique, not_null]
+      - name: report_date
+        description: "Date the report was requested for (last day of the period), from the _source_file path. NULL would mean the path layout changed."
+        data_tests: [not_null]
+      - name: sku
+        description: "Seller's SKU (SHOP_SKU) — the same value as sku in stg_ym__offers and stg_ym__stock_levels."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_ym__offers')
+                field: sku
+              config: {severity: warn}
+      - name: cluster_name
+        description: "Warehouse cluster / macro-region (MACROREGION_NAME): Москва, Санкт-Петербург, Екатеринбург, Казань, Ростов. A cluster, not a warehouse_id — map to warehouses in dim_warehouses."
+        data_tests: [not_null]
+      - name: market_sku
+        description: "Marketplace card id (MARKET_SKU); matches market_sku in stg_ym__offers."
+      - name: offer_name
+        description: "Product name as printed in the report."
+      - name: market_category_name
+        description: "Marketplace category (CATEGORY)."
+      - name: length_mm
+        description: "Package length, mm (the report uses mm; stg_ym__offers uses cm)."
+      - name: width_mm
+        description: "Package width, mm."
+      - name: height_mm
+        description: "Package height, mm."
+      - name: volume_l
+        description: "Package volume, litres — the unit storage is billed in."
+      - name: turnover_days
+        description: "Marketplace's turnover in days = stock ÷ average daily sales over the period; NULL when 'Нет продаж'."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: has_sales
+        description: "FALSE when the report says 'Нет продаж' for this sku × cluster (turnover_days is NULL then)."
+        data_tests: [not_null]
+      - name: avg_daily_units_sold
+        description: "Average daily units sold over the period (AVG_SOLD_ITEMS)."
+        data_tests: [not_null]
+      - name: avg_daily_volume_sold_l
+        description: "Average daily volume sold, litres (AVG_SOLD_VOLUME)."
+      - name: avg_daily_volume_on_stock_l
+        description: "Average daily volume in stock, litres (AVG_SOLD_VOLUME_ON_STOCK)."
+      - name: units_on_stock
+        description: "Units in stock on the last day of the period (ITEMS_ON_STOCK) — compare with stg_ym__stock_levels FIT on report_date, summed over the cluster's warehouses."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: storage_amount
+        description: "Paid-storage cost for the period, RUB (AMOUNT); NULL when '-' (storage was free — every row so far)."
+      - name: market_recommendation
+        description: "Marketplace's free-text advice for the sku in this cluster (MARKET_RECOMMENDATION)."
