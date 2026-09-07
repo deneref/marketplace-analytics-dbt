@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Daily catalogue + stock snapshot for marketplace-analytics-dbt.
+         Install (once):  see scripts/launchd/README.md
+         launchd runs a missed job at the next wake if the laptop was asleep at 09:00 (unlike cron). -->
+    <key>Label</key>
+    <string>com.marketplace-analytics.daily</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO__/ingest/daily.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>DBT</key>
+        <string>0</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+
+    <!-- launchd's own stdout/stderr; the script itself writes logs/daily/<date>.log -->
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/daily/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/daily/launchd.err.log</string>
+</dict>
+</plist>
