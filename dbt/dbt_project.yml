@@ -20,7 +20,8 @@ models:
       +materialized: view
       +schema: staging
     intermediate:
-      +materialized: ephemeral
+      +materialized: view        # not ephemeral: keeps the models queryable for debugging and stops the JSON
+      +schema: intermediate      # flatten of staging from being inlined into every mart that refs them
     marts:
       +materialized: table
       +schema: marts

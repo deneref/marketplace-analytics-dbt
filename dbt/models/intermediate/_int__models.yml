@@ -1,0 +1,78 @@
+version: 2
+
+models:
+  - name: int_order_lines
+    description: >
+      The order line as an analytical entity: one row per order × line (same grain as stg_ym__order_lines),
+      with the order's attributes, what happened to the units (rejected / returned → delivered, line_status) and
+      the order's fees allocated to the line proportionally to price_buyer_total, rounding residual on the most
+      expensive line so the sum per order matches stg_ym__order_fees exactly. Parent of fct_order_lines and
+      fct_sales_daily. Filter on is_test_order and is_final downstream.
+    data_tests:
+      # returned + rejected can never exceed what was ordered
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "units_delivered >= 0"
+      # a terminal order has a terminal line status
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not (is_final and line_status = 'in_flight')"
+      # a cancelled line delivered nothing
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not (line_status = 'cancelled' and units_delivered <> 0)"
+    columns:
+      - name: order_line_key
+        description: "Surrogate key from stg_ym__order_lines (order_id + line_index)."
+        data_tests: [unique, not_null]
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_ym__orders')
+                field: order_id
+      - name: sku
+        data_tests: [not_null]
+      - name: ordered_date
+        description: "Order creation date — the date basis of fct_sales_daily."
+        data_tests: [not_null]
+      - name: status_updated_at
+        description: "Incremental watermark for fct_order_lines."
+        data_tests: [not_null]
+      - name: order_status
+        data_tests: [not_null]
+      - name: is_final
+        description: "TRUE when the order is in a terminal status; delivered units of a non-final line are provisional."
+        data_tests: [not_null]
+      - name: line_status
+        description: >
+          delivered | unredeemed (parcel travelled, buyer did not collect — REJECTED events on the full quantity) |
+          cancelled (order cancelled before shipment — by order status, such lines carry no events) | returned
+          (RETURNED events on the full quantity; the order status stays DELIVERED) | partially_delivered (part of
+          the quantity unredeemed or returned) | in_flight. Derivation verified with analyses/line_status_combinations.sql.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['delivered', 'unredeemed', 'cancelled', 'returned', 'partially_delivered', 'in_flight']
+      - name: units_ordered
+        data_tests: [not_null]
+      - name: units_rejected
+        data_tests: [not_null]
+      - name: units_returned
+        data_tests: [not_null]
+      - name: units_delivered
+        description: "units_ordered − units_rejected − units_returned; 0 for orders cancelled before shipment (they carry no events). Provisional while is_final is FALSE."
+        data_tests: [not_null]
+      - name: fee_share
+        description: "Share of the line in the order's price_buyer_total (falls back to units when the order is free). Sums to 1 per order."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: fee_total
+        description: "All fees of the order allocated to this line, RUB. Sum per order = sum(stg_ym__order_fees.fee_amount) — see tests/assert_fees_allocation_sums.sql."
+        data_tests: [not_null]

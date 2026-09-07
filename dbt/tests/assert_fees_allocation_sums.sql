@@ -1,15 +1,28 @@
 -- Allocation must neither lose nor create money:
--- sum of fees allocated to order lines == sum of fees per order in the services sheet.
--- TODO(Daniil): point at your intermediate model once written.
-{{ config(severity='error', enabled=false) }}
+-- fees allocated to the lines of an order sum to the fees of that order in the source, to the kopeck.
+{{ config(severity='error') }}
 
 with allocated as (
-    select order_id, sum(allocated_fees) as fees from {{ ref('fct_order_items') }} group by 1
+
+    select order_id, sum(fee_total) as fees
+    from {{ ref('int_order_lines') }}
+    group by 1
+
 ),
+
 per_order as (
-    select order_id, sum(try_to_decimal(service_amount, 18, 2)) as fees
-    from {{ source_or_seed('united_orders_services') }} group by 1
+
+    select order_id, sum(fee_amount) as fees
+    from {{ ref('stg_ym__order_fees') }}
+    group by 1
+
 )
-select a.order_id, a.fees as allocated, p.fees as reported
-from allocated a join per_order p using (order_id)
-where abs(a.fees - p.fees) > 0.01
+
+select
+    coalesce(a.order_id, p.order_id) as order_id,
+    a.fees                           as allocated,
+    p.fees                           as reported
+from allocated as a
+full outer join per_order as p
+    on p.order_id = a.order_id
+where coalesce(a.fees, 0) <> coalesce(p.fees, 0)
