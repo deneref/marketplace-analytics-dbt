@@ -76,3 +76,67 @@ models:
       - name: fee_total
         description: "All fees of the order allocated to this line, RUB. Sum per order = sum(stg_ym__order_fees.fee_amount) — see tests/assert_fees_allocation_sums.sql."
         data_tests: [not_null]
+
+  - name: int_stock_daily
+    description: >
+      Stock of one SKU at one warehouse on one snapshot day, stock types pivoted to columns from
+      stg_ym__stock_levels. Types are not additive — units_fit = units_available + units_freeze — so downstream
+      picks a column, never sums across them. An offer listed at a warehouse with no stock is a row of zeros.
+      No calendar fill: days without a snapshot are absent. Parent of fct_inventory_daily.
+    data_tests:
+      # grain
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [snapshot_date, sku, warehouse_id]
+      # documented relation between the types (getStocks: FIT = sellable or reserved); warn if the data disagrees
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "units_fit = units_available + units_freeze"
+          config: {severity: warn}
+    columns:
+      - name: snapshot_date
+        data_tests: [not_null]
+      - name: sku
+        data_tests: [not_null]
+      - name: warehouse_id
+        data_tests: [not_null]
+      - name: units_fit
+        description: "Good stock: sellable or reserved (FIT). Base for stock value and days of cover."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: units_available
+        description: "Sellable right now (AVAILABLE) — what the buyer sees."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: units_freeze
+        description: "Reserved for placed, not yet shipped orders (FREEZE)."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: units_defect
+        description: "Damaged units, incl. damaged returns (DEFECT); not coming back to sale."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: units_quarantine
+        description: "Temporarily blocked from sale (QUARANTINE), e.g. pending an intake check."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: stock_updated_at
+        description: "Latest updatedAt of the offer × warehouse in the snapshot."
+      - name: is_out_of_stock
+        description: "units_available = 0 — nothing sellable; units_fit may still be > 0 when everything is reserved."
+        data_tests: [not_null]
