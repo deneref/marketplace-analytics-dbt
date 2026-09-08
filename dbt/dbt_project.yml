@@ -13,6 +13,7 @@ clean-targets: ["target", "dbt_packages"]
 vars:
   use_demo_seeds: false        # dbt build --vars '{"use_demo_seeds": true}' runs on synthetic seeds, no API needed
   base_month: "2025-01-01"     # index base for public rpt_* views
+  fct_order_lines_lookback_days: 30   # incremental window: late fees and return events do not move status_updated_at
 
 models:
   marketplace_analytics:

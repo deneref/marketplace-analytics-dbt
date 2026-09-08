@@ -1,0 +1,145 @@
+version: 2
+
+models:
+  - name: fct_order_lines
+    description: >
+      Transaction fact at the grain of order × line — the unit of sale. One row per line of every order in
+      orders_stats since 2025-01, test orders included (filter on is_test_order). Money: price_buyer_total is what
+      the buyer paid after all discounts (reconciles to the realization report's total_after_discount exactly),
+      price_total adds the marketplace-funded discount (reconciles to total_before_discount within 0.7 %), revenue
+      is the delivered share of price_total and is restated when a return arrives. Fees are the order's fees
+      allocated to the line in int_order_lines and are charged regardless of delivery. Sales are dated by
+      delivered_date (receipt), not ordered_date. Incremental: delete+insert by order_id with a 30-day window on
+      status_updated_at; tests/assert_fct_order_lines_is_current.sql proves the window is wide enough.
+    data_tests:
+      # incremental must not lose rows against its parent
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('int_order_lines')
+      # revenue exists only for delivered units
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not (units_delivered = 0 and revenue <> 0)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not (units_delivered > 0 and revenue <= 0)"
+          config: {severity: warn}          # a delivered line at 0 ₽ is possible (full discount) but worth a look
+      # a sale has a date of receipt; an unsold line has none
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(delivered_date is not null) = (order_status in ('DELIVERED', 'PARTIALLY_DELIVERED', 'RETURNED'))"
+      # price arithmetic
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "price_total = price_buyer_total + coalesce(price_marketplace_total, 0)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "margin_before_cogs = revenue - fee_total"
+    columns:
+      - name: order_line_key
+        description: "Surrogate key (order_id + line_index), same as int_order_lines."
+        data_tests: [unique, not_null]
+      - name: order_id
+        description: "Marketplace order id — degenerate dimension, no dim_orders. Incremental key."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('int_order_lines')
+                field: order_id
+      - name: line_index
+        data_tests: [not_null]
+      - name: sku
+        description: "Seller's SKU — FK to dim_products (add the relationships test when dim_products exists)."
+        data_tests: [not_null]
+      - name: market_sku
+        description: "Marketplace's SKU of the same offer."
+      - name: warehouse_id
+        description: "FK to dim_warehouses (add the relationships test when dim_warehouses exists)."
+      - name: ordered_date
+        description: "Order creation date — for cohort and demand questions, NOT the sales date."
+        data_tests: [not_null]
+      - name: delivered_date
+        description: >
+          Date the buyer received the order (Moscow wall clock) — THE sales date. status_updated_at of a
+          DELIVERED / PARTIALLY_DELIVERED order; for RETURNED (delivered, then fully returned) the status timestamp
+          is the return, so this is an upper bound. NULL for anything not (yet) delivered.
+      - name: rejected_date
+        description: "Date the unredeemed parcel was registered back, from line events."
+      - name: returned_date
+        description: "Date the return was registered, from line events."
+      - name: status_updated_at
+        description: "Last order status change (ISO with +03:00). Incremental watermark."
+        data_tests: [not_null]
+      - name: order_status
+        data_tests: [not_null]
+      - name: line_status
+        description: "delivered | partially_delivered | returned | unredeemed | cancelled | in_flight — see int_order_lines."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['delivered', 'unredeemed', 'cancelled', 'returned', 'partially_delivered', 'in_flight']
+      - name: is_final
+        description: "Order in a terminal status; while FALSE, units_delivered and revenue are provisional."
+        data_tests: [not_null]
+      - name: payment_type
+        description: "PREPAID | POSTPAID — the strongest predictor of unredeemed orders (11 % vs 59 %)."
+      - name: delivery_region_id
+      - name: delivery_region_name
+      - name: is_test_order
+        description: "Marketplace test order (fake = true). Exclude from every metric."
+        data_tests: [not_null]
+      - name: returned_stock_type
+        description: "FIT | DEFECT | EXPIRED — condition of the returned goods."
+      - name: units_ordered
+        data_tests: [not_null]
+      - name: units_rejected
+        description: "Units the buyer did not collect (REJECTED events)."
+        data_tests: [not_null]
+      - name: units_returned
+        description: "Units returned after delivery (RETURNED events)."
+        data_tests: [not_null]
+      - name: units_delivered
+        description: "units_ordered − units_rejected − units_returned; 0 for cancelled orders. Restated as events arrive."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: price_buyer_total
+        description: "Paid by the buyer for the whole line after all discounts, Plus points included, RUB. = realization total_after_discount."
+        data_tests: [not_null]
+      - name: price_marketplace_total
+        description: "Marketplace-funded discount on the line (promo, Plus points, coupons), compensated to the seller, RUB. The API docs call it 'coupons'; the data says it is the whole discount."
+      - name: cashback_total
+        description: "Plus points spent on the line, RUB — a component of price_marketplace_total, kept for the unredeemed/cashback analysis."
+      - name: price_total
+        description: "price_buyer_total + price_marketplace_total — the price before marketplace discounts, RUB. = realization total_before_discount (−0.7 %)."
+        data_tests: [not_null]
+      - name: revenue
+        description: "Seller's revenue recognised on delivered_date: price_total × units_delivered / units_ordered, RUB. 0 until delivered; drops on returns (restatement)."
+        data_tests: [not_null]
+      - name: fee_commission
+        description: "Sales commission (FEE) allocated to the line, RUB."
+      - name: fee_delivery
+        description: "Delivery to the buyer (DELIVERY_TO_CUSTOMER), allocated by price share — a simplification, the marketplace bills by dimensions."
+      - name: fee_boost
+        description: "Paid promotion (AUCTION_PROMOTION)."
+      - name: fee_payment_transfer
+        description: "Payment acceptance/transfer (PAYMENT_TRANSFER)."
+      - name: fee_agency
+      - name: fee_crossregional
+      - name: fee_return_processing
+        description: "Return / unredeemed parcel processing — the fee that arrives weeks after the order and is the reason for the incremental window."
+      - name: fee_loyalty
+      - name: fee_total
+        description: "All fees of the order allocated to this line, RUB; positive = charged. Sum per order = stg_ym__order_fees (tests/assert_fees_allocation_sums.sql)."
+        data_tests: [not_null]
+      - name: bid_fee
+        description: "Bid fee reported on the line itself (items[].bidFee), RUB — not part of fee_total."
+      - name: margin_before_cogs
+        description: "revenue − fee_total, RUB. COGS is applied in fct_sales_daily."
+        data_tests: [not_null]
+      - name: dbt_updated_at
+        description: "When this row was last (re)written by dbt — shows which orders the incremental window touched."
