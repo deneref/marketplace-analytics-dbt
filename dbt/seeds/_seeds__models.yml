@@ -1,0 +1,92 @@
+version: 2
+
+# Hand-maintained reference data of the seller — the part of dim_products the marketplace does not know:
+# our own SKU-code taxonomy and the editorial facts about a model (name, drop, launch, whether it is still made).
+# Small, rarely changing, edited by a person in git: that is what seeds are for. The raw catalogue, orders and
+# stocks are NOT seeds — they come through RAW (see models/staging); demo_* seeds are their synthetic stand-ins.
+
+seeds:
+  - name: product_types
+    description: >
+      First segment of the seller's SKU code (H-L-B-001 → H) → product type label for the dashboard axis, whether
+      the type has sizes (drives the SKU-code parser: a type without sizes has three segments, not four) and the
+      display order. Six rows; add one when a new type of garment appears.
+    config:
+      column_types:
+        product_type_code: varchar
+        product_type: varchar
+        has_sizes: boolean
+        sort_order: integer
+    columns:
+      - name: product_type_code
+        description: "SKU-code prefix in upper case (H, L, T, SH, CAP, SC)."
+        data_tests: [unique, not_null]
+      - name: product_type
+        description: "Label shown in reports (Hoodie, Long sleeve, …)."
+        data_tests: [unique, not_null]
+      - name: has_sizes
+        description: "TRUE when the SKU code carries a size segment (S/M/L/XL); FALSE for one-size items (caps, scarves)."
+        data_tests: [not_null]
+      - name: sort_order
+        description: "Display order of types in reports."
+        data_tests: [unique, not_null]
+
+  - name: colour_codes
+    description: >
+      Colour segment of the SKU code → colour FAMILY and display order. The code names a family, not an exact shade:
+      the same B is cobalt blue on a hoodie and sky blue on a t-shirt, E is ecru and vanilla, GR is graphite
+      and black. The exact shade stays in product_name; this table is for legends and grouping.
+    config:
+      column_types:
+        colour_code: varchar
+        colour_name: varchar
+        sort_order: integer
+    columns:
+      - name: colour_code
+        description: "Colour segment of the SKU code in upper case (W, E, BG, P, BUR, RD, LB, B, GR)."
+        data_tests: [unique, not_null]
+      - name: colour_name
+        description: "Colour family in words, for legends."
+        data_tests: [unique, not_null]
+      - name: sort_order
+        description: "Light → dark order for legends and stacked charts."
+        data_tests: [unique, not_null]
+
+  - name: product_models
+    description: >
+      One row per MODEL — the design without size and colour (model_code = type + model number, H-001). Editorial
+      facts the marketplace does not have: name, drop/collection, launch date, lifecycle status. Maintained by the
+      seller at every drop; a SKU whose model is missing here does not break the build (relationships test is
+      warn, dim_products falls back to model_code), it shows up as a warning. ~17 rows.
+    config:
+      column_types:
+        model_code: varchar
+        model_name: varchar
+        collection: varchar
+        launch_date: date
+        lifecycle_status: varchar
+        discontinued_date: date
+    columns:
+      - name: model_code
+        description: "product_type_code + '-' + 3-digit model number, as parsed from the SKU code (H-001, CAP-006). Model numbers repeat across types (CAP-006 and T-006 are different models), so the type is part of the key."
+        data_tests: [unique, not_null]
+      - name: model_name
+        description: "Design name as the brand calls it, in English, without the brand name (cumming of age, lotus). Card names on the marketplace stay in product_name."
+        data_tests: [not_null]
+      - name: collection
+        description: "Drop / collection / season the model belongs to. Free text, NULL until the brand fills it in."
+      - name: launch_date
+        description: "Day the model went on sale. Pre-filled with the first order date from orders_stats as a proxy — replace with the real launch date; NULL for models not yet launched."
+      - name: lifecycle_status
+        description: "Production status decided by the brand: new (just launched), core (kept in production), limited (one batch, sold until gone), discontinued (no longer made; remaining stock sells out)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['new', 'core', 'limited', 'discontinued']
+      - name: discontinued_date
+        description: "Day the decision to stop production was made; NULL unless lifecycle_status = discontinued."
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(lifecycle_status = 'discontinued') = (discontinued_date is not null)"

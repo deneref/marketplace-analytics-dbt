@@ -1,31 +1,31 @@
-SKU,VALID_FROM,UNIT_COST
-T-S-001,2025-01-01,1413.0
-T-S-002,2025-01-01,882.0
-T-S-003,2025-01-01,1346.0
-T-S-004,2025-01-01,756.0
-T-S-005,2025-01-01,1038.0
-T-S-006,2025-01-01,1347.0
-T-S-007,2025-01-01,1184.0
-T-S-008,2025-01-01,1008.0
-T-S-009,2025-01-01,958.0
-T-S-010,2025-01-01,1066.0
-T-S-011,2025-01-01,1191.0
-T-S-012,2025-01-01,1218.0
-HOO-001,2025-01-01,3029.0
-HOO-002,2025-01-01,2239.0
-HOO-003,2025-01-01,1548.0
-HOO-004,2025-01-01,2120.0
-HOO-005,2025-01-01,1716.0
-HOO-006,2025-01-01,3247.0
-HOO-007,2025-01-01,3538.0
-HOO-008,2025-01-01,3067.0
-CAP-001,2025-01-01,671.0
-CAP-002,2025-01-01,651.0
-CAP-003,2025-01-01,883.0
-CAP-004,2025-01-01,906.0
-CAP-005,2025-01-01,661.0
-ACC-001,2025-01-01,443.0
-ACC-002,2025-01-01,524.0
-ACC-003,2025-01-01,598.0
-ACC-004,2025-01-01,564.0
-ACC-005,2025-01-01,458.0
+SKU,PRODUCT_NAME,BATCH_LABEL,BATCH_PERIOD,BATCH_UNITS,VALID_FROM,VALID_TO,UNIT_COST,CURRENCY,COST_MATERIALS,COST_MANUFACTURING,COST_PRINT,COST_LABEL,COST_PACKAGING,COST_SHIPPING,COST_OTHER,COST_BASIS,IS_ESTIMATE,HAS_COST_BREAKDOWN,SKU_IN_CATALOGUE,SOURCE_FILE,SOURCE_SHEET,NOTE,_LOADED_AT,_SOURCE_FILE
+T-S-001,T-S-001,Партия 1,2025,100,2025-01-01,,1413.0,RUB,423.9,706.5,141.3,0,70.65,70.65,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+T-S-002,T-S-002,Партия 1,2025,100,2025-01-01,,882.0,RUB,264.6,441.0,88.2,0,44.1,44.1,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+T-S-003,T-S-003,Партия 1,2025,100,2025-01-01,,1346.0,RUB,403.8,673.0,134.6,0,67.3,67.3,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+T-S-004,T-S-004,Партия 1,2025,100,2025-01-01,,756.0,RUB,226.8,378.0,75.6,0,37.8,37.8,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+T-S-005,T-S-005,Партия 1,2025,100,2025-01-01,,1038.0,RUB,311.4,519.0,103.8,0,51.9,51.9,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+T-S-006,T-S-006,Партия 1,2025,100,2025-01-01,,1347.0,RUB,404.1,673.5,134.7,0,67.35,67.35,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+T-S-007,T-S-007,Партия 1,2025,100,2025-01-01,,1184.0,RUB,355.2,592.0,118.4,0,59.2,59.2,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+T-S-008,T-S-008,Партия 1,2025,100,2025-01-01,,1008.0,RUB,302.4,504.0,100.8,0,50.4,50.4,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+T-S-009,T-S-009,Партия 1,2025,100,2025-01-01,,958.0,RUB,287.4,479.0,95.8,0,47.9,47.9,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+T-S-010,T-S-010,Партия 1,2025,100,2025-01-01,,1066.0,RUB,319.8,533.0,106.6,0,53.3,53.3,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+T-S-011,T-S-011,Партия 1,2025,100,2025-01-01,,1191.0,RUB,357.3,595.5,119.1,0,59.55,59.55,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+T-S-012,T-S-012,Партия 1,2025,100,2025-01-01,,1218.0,RUB,365.4,609.0,121.8,0,60.9,60.9,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+HOO-001,HOO-001,Партия 1,2025,100,2025-01-01,,3029.0,RUB,908.7,1514.5,302.9,0,151.45,151.45,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+HOO-002,HOO-002,Партия 1,2025,100,2025-01-01,,2239.0,RUB,671.7,1119.5,223.9,0,111.95,111.95,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+HOO-003,HOO-003,Партия 1,2025,100,2025-01-01,,1548.0,RUB,464.4,774.0,154.8,0,77.4,77.4,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+HOO-004,HOO-004,Партия 1,2025,100,2025-01-01,,2120.0,RUB,636.0,1060.0,212.0,0,106.0,106.0,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+HOO-005,HOO-005,Партия 1,2025,100,2025-01-01,,1716.0,RUB,514.8,858.0,171.6,0,85.8,85.8,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+HOO-006,HOO-006,Партия 1,2025,100,2025-01-01,,3247.0,RUB,974.1,1623.5,324.7,0,162.35,162.35,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+HOO-007,HOO-007,Партия 1,2025,100,2025-01-01,,3538.0,RUB,1061.4,1769.0,353.8,0,176.9,176.9,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+HOO-008,HOO-008,Партия 1,2025,100,2025-01-01,,3067.0,RUB,920.1,1533.5,306.7,0,153.35,153.35,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+CAP-001,CAP-001,Партия 1,2025,100,2025-01-01,,671.0,RUB,201.3,335.5,67.1,0,33.55,33.55,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+CAP-002,CAP-002,Партия 1,2025,100,2025-01-01,,651.0,RUB,195.3,325.5,65.1,0,32.55,32.55,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+CAP-003,CAP-003,Партия 1,2025,100,2025-01-01,,883.0,RUB,264.9,441.5,88.3,0,44.15,44.15,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+CAP-004,CAP-004,Партия 1,2025,100,2025-01-01,,906.0,RUB,271.8,453.0,90.6,0,45.3,45.3,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+CAP-005,CAP-005,Партия 1,2025,100,2025-01-01,,661.0,RUB,198.3,330.5,66.1,0,33.05,33.05,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+ACC-001,ACC-001,Партия 1,2025,100,2025-01-01,,443.0,RUB,132.9,221.5,44.3,0,22.15,22.15,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+ACC-002,ACC-002,Партия 1,2025,100,2025-01-01,,524.0,RUB,157.2,262.0,52.4,0,26.2,26.2,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+ACC-003,ACC-003,Партия 1,2025,100,2025-01-01,,598.0,RUB,179.4,299.0,59.8,0,29.9,29.9,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+ACC-004,ACC-004,Партия 1,2025,100,2025-01-01,,564.0,RUB,169.2,282.0,56.4,0,28.2,28.2,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv
+ACC-005,ACC-005,Партия 1,2025,100,2025-01-01,,458.0,RUB,137.4,229.0,45.8,0,22.9,22.9,0,batch_actual,false,true,true,demo,demo,,2026-01-05T10:00:00+00:00,demo/cogs/2026-01-05/by_sku.csv

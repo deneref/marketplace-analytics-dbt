@@ -1,0 +1,7 @@
+product_type_code,product_type,has_sizes,sort_order
+H,Hoodie,true,1
+L,Long sleeve,true,2
+T,T-shirt,true,3
+SH,Shirt,true,4
+CAP,Cap,false,5
+SC,Scarf,false,6

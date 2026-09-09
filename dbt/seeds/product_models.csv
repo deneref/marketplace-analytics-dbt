@@ -1,0 +1,18 @@
+model_code,model_name,collection,launch_date,lifecycle_status,discontinued_date
+H-001,cumming of age,,2025-01-22,deprecated,2026-01-01
+H-004,olives,,2025-02-01,deprecated,2026-01-01
+H-005,one of your (lover)s,,2025-03-12,deprecated,2026-01-01
+L-001,cumming of age,,2025-02-26,deprecated,2026-01-01
+L-002,horny tiger,,2025-01-10,deprecated,2026-01-01
+L-003,martini,,2025-01-16,core,
+L-011,orchid,,2026-06-30,core,
+T-006,mandarins,,2025-12-10,core,
+T-007,pussyplay,,2025-12-10,core,
+T-008,boys,,2025-12-20,core,
+T-010,herons,,2026-07-18,new,
+SH-009,eat it,,2025-12-12,core,
+SH-012,lotus,,,new,
+SH-013,feathers,,,new,
+CAP-006,sun flower,,2025-04-28,core,
+CAP-007,what a good day,,2025-06-12,core,
+SC-001,courage / eruption,,2025-09-23,core,
