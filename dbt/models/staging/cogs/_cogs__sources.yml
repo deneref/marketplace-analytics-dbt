@@ -1,0 +1,74 @@
+# Hand-written (unlike _ym__sources.yml, which is generated): the cost file is one table with a fixed layout,
+# built by us from the partner's workbooks, not an API export. scripts/gen_sources_yml.py ignores the COGS_* tables.
+# ingest/load_to_snowflake.py reads this file too and pushes the descriptions to Snowflake as COMMENTs.
+
+version: 2
+
+sources:
+  - name: cogs
+    description: >-
+      Unit cost per SKU × validity period, compiled from the partner's cost workbooks (Unit экономика.xlsx,
+      OOY_финансы7.xlsx) into data/raw/cogs/<date>/by_sku.csv and loaded as-is (all VARCHAR) by
+      ingest/load_to_snowflake.py. A new file version = a new dated folder; staging takes the latest file as a whole.
+      Private data: data/ is git-ignored; the public demo build uses seeds/demo_cogs_by_sku.csv instead.
+    database: MARKETPLACE
+    schema: RAW
+    tables:
+      - name: cogs_by_sku
+        identifier: COGS_BY_SKU
+        description: >-
+          One row per SKU × cost version. UNIT_COST = sum of the seven COST_* items. Three levels of confidence in
+          COST_BASIS: batch_actual (journal of the 2026 batches), supply_allocated (2024 supplies: one figure for all
+          prints of a supply), plan_2024 (planned calculation, IS_ESTIMATE = true). Methodology and open questions:
+          06_пет-проект/07_cogs_разбор.md.
+        columns:
+          - name: SKU
+            description: "Seller's SKU, same key as ORDERS_STATS items.shopSku and OFFER_MAPPINGS offer.offerId."
+          - name: PRODUCT_NAME
+            description: "Product name as written in the workbook. Documentation only; canonical names come from the catalogue."
+          - name: BATCH_LABEL
+            description: "Batch / supply the cost comes from ('Партия 1', 'Поставка 3', 'План 2024')."
+          - name: BATCH_PERIOD
+            description: "When the batch was produced, free text ('июль 2026', '2024')."
+          - name: BATCH_UNITS
+            description: "Units in the batch. Empty for planned calculations."
+          - name: VALID_FROM
+            description: "First day this cost version applies (YYYY-MM-DD). Versions of one SKU are contiguous."
+          - name: VALID_TO
+            description: "Last day this cost version applies (YYYY-MM-DD); empty = open-ended (current version)."
+          - name: UNIT_COST
+            description: "Cost per unit, RUB = COST_MATERIALS + COST_MANUFACTURING + COST_PRINT + COST_LABEL + COST_PACKAGING + COST_SHIPPING + COST_OTHER."
+          - name: CURRENCY
+            description: "Currency of all cost columns. RUB."
+          - name: COST_MATERIALS
+            description: "Fabric and materials per unit, RUB. 0 for bought-in goods (caps, scarves) and 2024 supplies (not itemised)."
+          - name: COST_MANUFACTURING
+            description: "Sewing / production (or purchase price of bought-in goods) per unit, RUB."
+          - name: COST_PRINT
+            description: "Printing per unit, RUB."
+          - name: COST_LABEL
+            description: "Labels and tags per unit, RUB."
+          - name: COST_PACKAGING
+            description: "Packaging per unit, RUB."
+          - name: COST_SHIPPING
+            description: "INBOUND logistics of the batch (factory → warehouse) per unit, RUB. Not the marketplace delivery fee."
+          - name: COST_OTHER
+            description: "Other direct costs per unit, RUB."
+          - name: COST_BASIS
+            description: "Where the number comes from: batch_actual | supply_allocated | plan_2024."
+          - name: IS_ESTIMATE
+            description: "'true' when the cost is a plan, not an actual (plan_2024)."
+          - name: HAS_COST_BREAKDOWN
+            description: "'false' when only the total is known and the COST_* split is not meaningful (2024 supplies)."
+          - name: SKU_IN_CATALOGUE
+            description: "'true' if the SKU existed in the marketplace catalogue when the file was built. Goes stale; the staging relationships test is the live check."
+          - name: SOURCE_FILE
+            description: "Workbook the row was taken from."
+          - name: SOURCE_SHEET
+            description: "Sheet(s) of the workbook."
+          - name: NOTE
+            description: "Free-text caveats: missing cost items, batch transitions, name mappings."
+          - name: _LOADED_AT
+            description: "Load timestamp (UTC ISO 8601), the same for every row of one file."
+          - name: _SOURCE_FILE
+            description: "Path under data/raw/, e.g. cogs/2026-09-09/by_sku.csv. Staging keeps the latest file only."
