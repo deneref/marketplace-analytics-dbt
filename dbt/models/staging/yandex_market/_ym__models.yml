@@ -579,7 +579,12 @@ models:
         data_tests: [unique, not_null]
       - name: report_date
         description: "Date the report was requested for (last day of the period), from the _source_file path. NULL would mean the path layout changed."
-        data_tests: [not_null]
+        data_tests:
+          - not_null
+          # month-end contract: fct_inventory_turnover_monthly keys on report_month, a mid-month report would double a month
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "= last_day(report_date)"
       - name: sku
         description: "Seller's SKU (SHOP_SKU) — the same value as sku in stg_ym__offers and stg_ym__stock_levels."
         data_tests:

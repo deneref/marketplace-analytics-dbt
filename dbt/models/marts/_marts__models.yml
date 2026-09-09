@@ -143,3 +143,87 @@ models:
         data_tests: [not_null]
       - name: dbt_updated_at
         description: "When this row was last (re)written by dbt — shows which orders the incremental window touched."
+
+  - name: fct_inventory_turnover_monthly
+    description: >
+      Periodic snapshot at the grain of report_month × sku × cluster_name: the marketplace's goods-turnover
+      report taken as is, one row per sku per warehouse cluster per monthly report. turnover_days is the
+      marketplace's figure (stock ÷ average daily sales), NULL when the sku had no sales in the cluster; it is
+      non-additive — aggregate units_on_stock and avg_daily_units_sold instead. storage_amount is paid storage for
+      the period in RUB, 0 when the report shows '-' (is_storage_billed FALSE). No own turnover, no product
+      attributes (dim_products). Reports exist for month ends only, enforced on stg_ym__turnover_report.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('stg_ym__turnover_report')
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [report_month, sku, cluster_name]
+      # 'No sales' is the only reason for a NULL turnover
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "has_sales = (turnover_days is not null)"
+      # not billed → 0; a billed 0 is possible and is kept apart by the flag
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "is_storage_billed or storage_amount = 0"
+    columns:
+      - name: turnover_report_key
+        description: "Surrogate key (report_date + sku + cluster_name), same as stg_ym__turnover_report."
+        data_tests: [unique, not_null]
+      - name: report_month
+        description: "First day of the report month; the report itself is dated its last day."
+        data_tests: [not_null]
+      - name: sku
+        description: "Seller's SKU — key of dim_products."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_ym__offers')
+                field: sku
+              config: {severity: warn}
+      - name: cluster_name
+        description: "Warehouse cluster / macro-region as the report names it (Москва, Санкт-Петербург, …) — the natural key, the marketplace has no cluster id; dim_warehouses maps warehouse_id to this name."
+        data_tests: [not_null]
+      - name: has_sales
+        description: "FALSE when the report says 'Нет продаж' for the sku in this cluster."
+        data_tests: [not_null]
+      - name: market_recommendation
+        description: "Marketplace's free-text advice for the sku in this cluster."
+      - name: units_on_stock
+        description: "Units in stock on the last day of the month — numerator of turnover_days; compare with int_stock_daily on last_day(report_month) summed over the cluster's warehouses."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: avg_daily_units_sold
+        description: "Average units sold per day over the report period — denominator of turnover_days."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: avg_daily_volume_sold_l
+        description: "Average volume sold per day, litres."
+      - name: avg_daily_volume_on_stock_l
+        description: "Average volume in stock per day, litres — the unit storage is billed in."
+      - name: turnover_days
+        description: "Marketplace's turnover in days; NULL when has_sales is FALSE. Non-additive: never sum or average across rows, show per sku × cluster × month."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: storage_amount
+        description: "Paid storage for the period, RUB; 0 when not billed (every row so far)."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: is_storage_billed
+        description: "TRUE when the report printed an amount rather than '-'; keeps a billed 0 apart from 'not billed'."
+        data_tests: [not_null]
+      - name: dbt_updated_at
+        description: "Timestamp of the dbt run that built the table."
