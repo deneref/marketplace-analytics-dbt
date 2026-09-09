@@ -1,6 +1,6 @@
 -- Cost versions of one SKU must tile the timeline without gaps or overlaps:
 -- every version except the last closes exactly the day before the next one opens, and only the last may be open-ended.
--- A gap = delivered lines with no cost; an overlap = a line matching two costs (both caught by assert_delivered_lines_have_cogs,
+-- A gap = delivered lines with no cost; an overlap = a line matching two costs (both caught by assert_delivered_lines_have_unit_cost,
 -- but here at the source, before the join).
 {{ config(severity='error') }}
 
@@ -11,7 +11,7 @@ with versions as (
         valid_from,
         valid_to,
         lead(valid_from) over (partition by sku order by valid_from) as next_valid_from
-    from {{ ref('stg_cogs__by_sku') }}
+    from {{ ref('stg_finance__unit_costs') }}
 
 )
 

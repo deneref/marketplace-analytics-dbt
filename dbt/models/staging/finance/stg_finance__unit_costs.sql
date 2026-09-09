@@ -1,7 +1,7 @@
 {{ config(materialized='view') }}
 
 -- Unit cost (COGS) per SKU × validity period, from the cost workbooks (data/raw/cogs/<date>/by_sku.csv).
--- Grain: sku × valid_from. One row per cost version; versions of one SKU do not overlap (tests/assert_cogs_versions_are_continuous.sql).
+-- Grain: sku × valid_from. One row per cost version; versions of one SKU do not overlap (tests/assert_unit_cost_versions_are_continuous.sql).
 --
 -- Staging rule: rename, cast. No joins, no derived business logic. Strict casts on purpose: the file is ours and
 -- checked before load, so a bad value should fail the build, not turn into NULL.
@@ -16,7 +16,7 @@
 
 with src as (
 
-    select * from {{ source_or_seed('cogs_by_sku', 'cogs') }}
+    select * from {{ source_or_seed('cogs_by_sku', 'finance') }}
 
 ),
 

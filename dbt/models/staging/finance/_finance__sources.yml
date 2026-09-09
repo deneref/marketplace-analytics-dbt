@@ -5,12 +5,13 @@
 version: 2
 
 sources:
-  - name: cogs
+  - name: finance
     description: >-
-      Unit cost per SKU × validity period, compiled from the partner's cost workbooks (Unit экономика.xlsx,
-      OOY_финансы7.xlsx) into data/raw/cogs/<date>/by_sku.csv and loaded as-is (all VARCHAR) by
-      ingest/load_to_snowflake.py. A new file version = a new dated folder; staging takes the latest file as a whole.
-      Private data: data/ is git-ignored; the public demo build uses seeds/demo_cogs_by_sku.csv instead.
+      The brand's own finance bookkeeping (the partner's workbooks: Unit экономика.xlsx, OOY_финансы7.xlsx),
+      as opposed to yandex_market (the marketplace's API). Currently one table: unit costs per SKU, compiled into
+      data/raw/cogs/<date>/by_sku.csv and loaded as-is (all VARCHAR) by ingest/load_to_snowflake.py. A new file
+      version = a new dated folder; staging takes the latest file as a whole. Private data: data/ is git-ignored;
+      the public demo build uses seeds/demo_cogs_by_sku.csv instead.
     database: MARKETPLACE
     schema: RAW
     tables:

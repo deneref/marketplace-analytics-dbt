@@ -1,25 +1,25 @@
 version: 2
 
 models:
-  - name: stg_cogs__by_sku
+  - name: stg_finance__unit_costs
     description: >
       Unit cost per SKU × validity period, typed. Latest loaded file wins as a whole. One row per cost version;
-      versions of one SKU are contiguous and do not overlap (tests/assert_cogs_versions_are_continuous.sql).
+      versions of one SKU are contiguous and do not overlap (tests/assert_unit_cost_versions_are_continuous.sql).
       Joined into fct_order_lines by sku and delivered_date between valid_from and coalesce(valid_to, '9999-12-31');
-      tests/assert_delivered_lines_have_cogs.sql checks every delivered line finds exactly one version.
+      tests/assert_delivered_lines_have_unit_cost.sql checks every delivered line finds exactly one version.
     data_tests:
       - dbt_utils.expression_is_true:
-          name: cogs_unit_cost_equals_sum_of_items
+          name: unit_cost_equals_sum_of_items
           arguments:
             expression: >
               abs(unit_cost - (cost_materials + cost_manufacturing + cost_print + cost_label
                                + cost_packaging + cost_shipping + cost_other)) < 0.01
       - dbt_utils.expression_is_true:
-          name: cogs_valid_to_not_before_valid_from
+          name: unit_cost_valid_to_not_before_valid_from
           arguments:
             expression: "valid_to is null or valid_to >= valid_from"
       - dbt_utils.expression_is_true:
-          name: cogs_estimate_flag_matches_basis
+          name: unit_cost_estimate_flag_matches_basis
           arguments:
             expression: "is_estimate = (cost_basis = 'plan_2024')"
     columns:

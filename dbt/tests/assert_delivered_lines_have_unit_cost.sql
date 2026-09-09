@@ -19,7 +19,7 @@ matched as (
         l.delivered_date,
         count(c.sku_cost_key) as cost_versions
     from lines as l
-    left join {{ ref('stg_cogs__by_sku') }} as c
+    left join {{ ref('stg_finance__unit_costs') }} as c
         on  c.sku = l.sku
         and l.delivered_date >= c.valid_from
         and l.delivered_date <= coalesce(c.valid_to, '9999-12-31'::date)
