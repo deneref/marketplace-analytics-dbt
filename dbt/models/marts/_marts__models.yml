@@ -9,8 +9,11 @@ models:
       price_total adds the marketplace-funded discount (reconciles to total_before_discount within 0.7 %), revenue
       is the delivered share of price_total and is restated when a return arrives. Fees are the order's fees
       allocated to the line in int_order_lines and are charged regardless of delivery. Sales are dated by
-      delivered_date (receipt), not ordered_date. Incremental: delete+insert by order_id with a 30-day window on
-      status_updated_at; tests/assert_fct_order_lines_is_current.sql proves the window is wide enough.
+      delivered_date (receipt), not ordered_date. Cost of goods is joined here at the line grain (unit cost of the
+      version valid on delivered_date, from the partner's finance workbooks) so that contribution_margin exists at the
+      finest grain and fct_sales_daily is one group by over this table. Incremental: delete+insert by order_id with
+      a 30-day window on status_updated_at, widened to all rows when the cost file was reloaded;
+      tests/assert_fct_order_lines_is_current.sql proves the window is wide enough.
     data_tests:
       # incremental must not lose rows against its parent
       - dbt_utils.equal_rowcount:
@@ -22,8 +25,12 @@ models:
             expression: "not (units_delivered = 0 and revenue <> 0)"
       - dbt_utils.expression_is_true:
           arguments:
-            expression: "not (units_delivered > 0 and revenue <= 0)"
+            expression: "not (delivered_date is not null and units_delivered > 0 and revenue <= 0)"
           config: {severity: warn}          # a delivered line at 0 ₽ is possible (full discount) but worth a look
+      # nothing is recognised before receipt: in-flight lines have forecast units but no money
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not (delivered_date is null and (revenue <> 0 or cogs <> 0))"
       # a sale has a date of receipt; an unsold line has none
       - dbt_utils.expression_is_true:
           arguments:
@@ -32,9 +39,23 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
             expression: "price_total = price_buyer_total + coalesce(price_marketplace_total, 0)"
+      # cost arithmetic: cogs only for delivered units, at the version's unit cost; estimated part never exceeds the whole
       - dbt_utils.expression_is_true:
           arguments:
-            expression: "margin_before_cogs = revenue - fee_total"
+            expression: "cogs = round(units_delivered * coalesce(unit_cost, 0), 2)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not (units_delivered = 0 and cogs <> 0)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "cogs_estimated = iff(is_cost_estimate, cogs, 0)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "contribution_margin = revenue - fee_total - cogs"
+      # a costed line carries its cost version; an uncosted delivered line is caught (warn) by tests/assert_delivered_lines_have_unit_cost.sql
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(unit_cost is not null) = (sku_cost_key is not null)"
     columns:
       - name: order_line_key
         description: "Surrogate key (order_id + line_index), same as int_order_lines."
@@ -138,8 +159,36 @@ models:
         data_tests: [not_null]
       - name: bid_fee
         description: "Bid fee reported on the line itself (items[].bidFee), RUB — not part of fee_total."
-      - name: margin_before_cogs
-        description: "revenue − fee_total, RUB. COGS is applied in fct_sales_daily."
+      - name: sku_cost_key
+        description: "Cost version (stg_finance__unit_costs) valid on delivered_date; null until the line is delivered or when no version covers the date."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_finance__unit_costs')
+                field: sku_cost_key
+      - name: unit_cost
+        description: "Unit cost of that version, RUB per unit. Reference only — not additive, do not sum in BI."
+      - name: cost_basis
+        description: "batch_actual | supply_allocated | plan_2024 — how much to trust the cost of this line."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['batch_actual', 'supply_allocated', 'plan_2024']
+      - name: is_cost_estimate
+        description: "true when the line is costed at a planned, not actual, unit cost (cost_basis = plan_2024). false when uncosted."
+        data_tests: [not_null]
+      - name: cogs
+        description: "Cost of goods sold, RUB = units_delivered × unit_cost. 0 until delivered; restated with units_delivered on returns."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: cogs_estimated
+        description: "The part of cogs that rests on a planned cost (= cogs when is_cost_estimate, else 0). Additive: share of margin on estimated cost = sum(cogs_estimated) / sum(cogs) in BI."
+        data_tests: [not_null]
+      - name: contribution_margin
+        description: "revenue − fee_total − cogs, RUB. Negative for unredeemed and returned lines (fees without revenue) — the cost of невыкуп lives here, not in fct_sales_daily."
         data_tests: [not_null]
       - name: dbt_updated_at
         description: "When this row was last (re)written by dbt — shows which orders the incremental window touched."

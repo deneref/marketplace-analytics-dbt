@@ -8,6 +8,7 @@ with lines as (
     select order_line_key, sku, delivered_date, units_delivered
     from {{ ref('fct_order_lines') }}
     where units_delivered > 0
+      and delivered_date is not null      -- in-flight lines carry forecast units and no date of receipt: nothing to cost yet
 
 ),
 

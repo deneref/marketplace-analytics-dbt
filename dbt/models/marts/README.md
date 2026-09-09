@@ -26,9 +26,9 @@ Minimum set:
 
 | model | grain | materialization |
 |---|---|---|
-| `fct_order_lines` | order × line (`order_line_key`) | incremental, 30-day window on `status_updated_at`; `delete+insert` by `order_id` (the unit of change is the order) or `merge` by `order_line_key` |
-| `fct_order_fees` | order × fee_type | table — unallocated truth for reconciliations |
-| `fct_sales_daily` | delivered day × sku | table, one `group by` over `fct_order_lines`; only delivered units |
+| `fct_order_lines` | order × line (`order_line_key`) | incremental, 30-day window on `status_updated_at` (all rows when the cost file was reloaded); `delete+insert` by `order_id` (the unit of change is the order). Carries revenue, allocated fees, `cogs` (unit cost of the version valid on `delivered_date`, from `stg_finance__unit_costs`) and `contribution_margin` — the P&L line |
+| ~~`fct_order_fees`~~ | — | dropped (09.09): allocated `fee_*` sum to the order's fees exactly (tests/assert_fees_allocation_sums.sql), so it would duplicate `stg_ym__order_fees`; reconcile against staging, unpivot in reporting if BI needs `fee_type` as a dimension |
+| `fct_sales_daily` | delivered day × sku | table, one `group by` over `fct_order_lines` (incl. `cogs`, `cogs_estimated`, `contribution_margin`); only delivered units — the margin of what was SOLD; the cost of unredeemed / returned lines stays in `fct_order_lines` |
 | `fct_inventory_daily` | snapshot_date × sku × warehouse_id | table — `days_of_cover`, `is_out_of_stock` |
 | `fct_inventory_turnover_monthly` | month × sku × macroregion | table — the marketplace's report as is, no own turnover |
 | `dim_products`, `dim_warehouses`, `dim_dates` | sku / warehouse_id / date_day | table |
