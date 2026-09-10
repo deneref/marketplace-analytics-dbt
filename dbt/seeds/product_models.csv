@@ -1,9 +1,9 @@
 model_code,model_name,collection,launch_date,lifecycle_status,discontinued_date
-H-001,cumming of age,,2025-01-22,deprecated,2026-01-01
-H-004,olives,,2025-02-01,deprecated,2026-01-01
-H-005,one of your (lover)s,,2025-03-12,deprecated,2026-01-01
-L-001,cumming of age,,2025-02-26,deprecated,2026-01-01
-L-002,horny tiger,,2025-01-10,deprecated,2026-01-01
+H-001,cumming of age,,2025-01-22,discontinued,2026-01-01
+H-004,olives,,2025-02-01,discontinued,2026-01-01
+H-005,one of your (lover)s,,2025-03-12,discontinued,2026-01-01
+L-001,cumming of age,,2025-02-26,discontinued,2026-01-01
+L-002,horny tiger,,2025-01-10,discontinued,2026-01-01
 L-003,martini,,2025-01-16,core,
 L-011,orchid,,2026-06-30,core,
 T-006,mandarins,,2025-12-10,core,
