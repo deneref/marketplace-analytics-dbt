@@ -71,7 +71,13 @@ models:
       - name: line_index
         data_tests: [not_null]
       - name: sku
-        description: "Seller's SKU — FK to dim_products (add the relationships test when dim_products exists)."
+        description: "Seller's SKU — FK to dim_products."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: sku
         data_tests: [not_null]
       - name: market_sku
         description: "Marketplace's SKU of the same offer."
@@ -222,6 +228,11 @@ models:
         data_tests: [not_null]
       - name: sku
         description: "Seller's SKU — join key to dim_products."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: sku
         data_tests: [not_null]
       - name: sku_orders_count
         description: "Orders that contained this sku on this day. Not additive across skus (an order with two skus counts once per sku) — 'orders per day' is count(distinct order_id) over fct_order_lines in BI."
@@ -304,7 +315,13 @@ models:
         description: "First day of the report month; the report itself is dated its last day."
         data_tests: [not_null]
       - name: sku
-        description: "Seller's SKU — key of dim_products."
+        description: "Seller's SKU as printed by the report — for the five caps this is the warehouse label (K1…K5 = dim_products.warehouse_sku), not the seller's code; resolve through dim_products before joining. Until then the relationships test warns on those rows."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: sku
+              config: {severity: warn}
         data_tests:
           - not_null
           - relationships:
@@ -356,3 +373,221 @@ models:
         data_tests: [not_null]
       - name: dbt_updated_at
         description: "Timestamp of the dbt run that built the table."
+
+  - name: dim_products
+    description: >
+      Conformed product dimension: one row per seller SKU (offerId = shopSku), the key every fact carries
+      (fct_order_lines, fct_sales_daily, fct_inventory_daily, fct_inventory_turnover_monthly). Type 1 — the current
+      card; card history is snap_offers, the price at the time of sale is in fct_order_lines. A SKU's row comes from
+      the last catalogue snapshot in which it was seen: a deleted card stays with is_in_catalogue = FALSE and keeps
+      its attributes. Size, colour, model and colourway are parsed from the seller's SKU code
+      (<type>-<size>-<colour>-<model number>, no size segment for one-size types); a code outside the convention
+      gets NULLs and is_sku_parsed = FALSE. Names, drops and lifecycle come from the seeds product_types,
+      colour_codes and product_models. Lifecycle dates only — no sales sums (those are measures of the facts).
+      The contract is enforced: this is the one table the whole reporting layer joins to.
+    config:
+      contract:
+        enforced: true
+    data_tests:
+      # the parse is the source of four hierarchy columns: they exist together or not at all
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "is_sku_parsed = (model_code is not null and colour_code is not null and size is not null)"
+      # a colourway is the model plus its colour
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not is_sku_parsed or model_colour_code = product_type_code || '-' || colour_code || '-' || split_part(model_code, '-', 2)"
+      # a one-size type has no size to sort; sized types do
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not is_sku_parsed or (size = 'ONE') = (size_order = 0)"
+      # a card in the catalogue is priced and measured; a missing value is a heads-up, not a broken build
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not is_in_catalogue or (current_basic_price >= 1 and volume_l > 0 and weight_kg > 0)"
+          config: {severity: warn}
+      # nothing was delivered before it was ordered
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "last_delivered_date is null or last_delivered_date >= first_ordered_date"
+    columns:
+      - name: sku
+        data_type: varchar
+        description: "Seller's SKU (offerId = shopSku) — the grain and the conformed key of every fact. Immutable on the marketplace: a card can only be deleted and re-created under a new code."
+        data_tests: [unique, not_null]
+      - name: market_sku
+        data_type: varchar
+        description: "Marketplace SKU the card is bound to (mapping.marketSku). Secondary lookup only: absent while the card is not bound (card_status NO_CARD_*), and a card can be re-bound."
+        data_tests:
+          - not_null:
+              config:
+                where: "is_in_catalogue and card_status like 'HAS_CARD%'"
+          - unique:
+              config: {severity: warn}     # the marketplace can merge two seller cards into one of its own
+      - name: warehouse_sku
+        data_type: varchar
+        description: "Label the marketplace warehouse prints for the SKU (WAREHOUSE_SKU of the realization report, e.g. K4 for CAP-Bur-006) — the code the turnover report uses as SHOP_SKU. Equals sku for most cards and for cards never sold. Lookup key for fct_inventory_turnover_monthly."
+        data_tests: [unique, not_null]
+      - name: product_name
+        data_type: varchar
+        description: "Card name as the seller filled it in, from the last snapshot the SKU was seen in."
+        data_tests: [not_null]
+      - name: market_category_name
+        data_type: varchar
+        description: "Marketplace category (mapping.marketCategoryName), e.g. 'Худи для взрослых'. Reference only — the dashboard axis is product_type."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Худи для взрослых', 'Лонгсливы для взрослых', 'Футболки для взрослых', 'Рубашки для взрослых', 'Кепки', 'Шарфы']
+              config: {severity: warn}     # a new category is a heads-up: check product_types and the parser
+      - name: product_type_code
+        data_type: varchar
+        description: "First segment of the SKU code in upper case (H, L, T, SH, CAP, SC). Present even when the rest of the code does not parse."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('product_types')
+                field: product_type_code
+              config: {severity: warn}     # unknown type = new garment type or a typo; add it to the seed
+      - name: product_type
+        data_type: varchar
+        description: "Product type label from product_types (Hoodie, Long sleeve, T-shirt, Shirt, Cap, Scarf) — the category axis of the dashboard. NULL when the type code is not in the seed."
+      - name: model_code
+        data_type: varchar
+        description: "The design without size and colour: product_type_code + '-' + 3-digit model number (H-001). Model numbers repeat across types, so the type is part of the code. NULL when the SKU code does not parse."
+        data_tests:
+          - not_null:
+              config:
+                where: "is_sku_parsed"
+          - relationships:
+              arguments:
+                to: ref('product_models')
+                field: model_code
+              config: {severity: warn}     # a model missing from the seed shows as its code (model_name falls back)
+      - name: model_name
+        data_type: varchar
+        description: "Design name from product_models (cumming of age, lotus); falls back to model_code when the seed has no row yet, NULL when the code does not parse."
+      - name: model_colour_code
+        data_type: varchar
+        description: "Colourway — the model in one colour across all sizes: product_type_code + colour_code + model number (H-B-001). The level at which a production batch is decided."
+      - name: colour_code
+        data_type: varchar
+        description: "Colour segment of the SKU code in upper case (W, E, BG, P, BUR, RD, LB, B, GR). A colour FAMILY, not a shade: B is cobalt on a hoodie and sky blue on a t-shirt."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('colour_codes')
+                field: colour_code
+              config: {severity: warn}     # new colour = add a row to the seed
+      - name: colour_name
+        data_type: varchar
+        description: "Colour family in words, from colour_codes."
+      - name: size
+        data_type: varchar
+        description: "S / M / L / XL from the SKU code; ONE for one-size types (caps, scarves); NULL when the code does not parse."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['S', 'M', 'L', 'XL', 'ONE']
+      - name: size_order
+        data_type: number
+        description: "Sort key for size: ONE = 0, S = 1, M = 2, L = 3, XL = 4 — Looker Studio sorts strings alphabetically (L, M, S, XL)."
+      - name: is_sku_parsed
+        data_type: boolean
+        description: "TRUE when the SKU code fits the convention its type demands. FALSE rows are listed by tests/assert_sku_codes_parse.sql (warn)."
+        data_tests: [not_null]
+      - name: collection
+        data_type: varchar
+        description: "Drop / collection / season from product_models; NULL until the brand fills it in."
+      - name: lifecycle_status
+        data_type: varchar
+        description: "Production status from product_models: new / core / limited / discontinued. Not 'is active': the card status is card_status / is_archived, the stock status is in fct_inventory_daily."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['new', 'core', 'limited', 'discontinued']
+      - name: launch_date
+        data_type: date
+        description: "Day the model went on sale, from product_models (editorial). Compare with first_ordered_date, the observed first demand."
+      - name: discontinued_date
+        data_type: date
+        description: "Day production stopped, from product_models; NULL unless lifecycle_status = discontinued."
+      - name: first_ordered_date
+        data_type: date
+        description: "First order containing the SKU, every order counted (cancelled included): the first time somebody wanted it. NULL for SKUs never ordered."
+      - name: last_delivered_date
+        data_type: date
+        description: "Last day a unit of the SKU was received by a buyer (status timestamp of a DELIVERED / PARTIALLY_DELIVERED order with units_delivered > 0, Moscow date — the same rule as delivered_date in fct_order_lines; RETURNED orders excluded, their timestamp is the return). NULL for SKUs never delivered."
+      - name: current_basic_price
+        data_type: number(18,2)
+        description: "Seller's price list value today (basicPrice.value), RUB. NOT the price of past sales — that is price_buyer_per_item in fct_order_lines. Never multiply units by this column."
+      - name: current_price_before_discount
+        data_type: number(18,2)
+        description: "Strike-through price today (basicPrice.discountBase), RUB; equals current_basic_price when no discount is shown, so a discount share never divides by NULL."
+      - name: volume_l
+        data_type: number(18,3)
+        description: "Package volume, litres: length × width × height in cm / 1000. Comparable with volume_l of the turnover report."
+      - name: weight_kg
+        data_type: number(10,3)
+        description: "Package weight, kg (weightDimensions.weight). Candidate base for delivery-fee allocation."
+      - name: card_status
+        data_type: varchar
+        description: "Marketplace card status at the last snapshot (HAS_CARD_CAN_UPDATE, NO_CARD_* while the card is being created)."
+      - name: is_archived
+        data_type: boolean
+        description: "TRUE when the seller archived the card (offer.archived)."
+        data_tests: [not_null]
+      - name: is_in_catalogue
+        data_type: boolean
+        description: "TRUE when the SKU is present in the latest catalogue snapshot; FALSE for a card that has been deleted since — the row stays so history keeps its attributes (tests/assert_no_orphans.sql warns when this happens)."
+        data_tests: [not_null]
+      - name: catalogue_snapshot_date
+        data_type: date
+        description: "Snapshot the row comes from: the latest export for cards in the catalogue, the last day the SKU was seen for deleted ones."
+        data_tests: [not_null]
+      - name: dbt_updated_at
+        data_type: timestamp_ltz
+        description: "Timestamp of the dbt run that built the table."
+
+unit_tests:
+  - name: dim_products_parses_sku_codes
+    description: >
+      The SKU-code parser on one row per branch: sized type, one-size type in lower case, short model number,
+      missing size segment, unknown type, size outside the list. Everything else is mocked empty.
+    model: dim_products
+    given:
+      - input: ref('stg_ym__offers')
+        rows:
+          - {sku: 'H-L-B-001',   snapshot_date: 2026-09-09}
+          - {sku: 'sc-Gr-001',   snapshot_date: 2026-09-09}
+          - {sku: 'CAP-Bg-6',    snapshot_date: 2026-09-09}
+          - {sku: 'H-B-001',     snapshot_date: 2026-09-09}
+          - {sku: 'SW-M-B-015',  snapshot_date: 2026-09-09}
+          - {sku: 'H-XXL-B-001', snapshot_date: 2026-09-09}
+      - input: ref('product_types')
+        rows:
+          - {product_type_code: 'H',   product_type: 'Hoodie', has_sizes: true,  sort_order: 1}
+          - {product_type_code: 'CAP', product_type: 'Cap',    has_sizes: false, sort_order: 5}
+          - {product_type_code: 'SC',  product_type: 'Scarf',  has_sizes: false, sort_order: 6}
+      - input: ref('colour_codes')
+        rows:
+          - {colour_code: 'B',  colour_name: 'blue',     sort_order: 8}
+          - {colour_code: 'GR', colour_name: 'graphite', sort_order: 9}
+          - {colour_code: 'BG', colour_name: 'beige',    sort_order: 3}
+      - input: ref('product_models')
+        rows:
+          - {model_code: 'H-001', model_name: 'cumming of age', lifecycle_status: 'core'}
+      - input: ref('stg_ym__realization_lines')
+        rows: []
+      - input: ref('int_order_lines')
+        rows: []
+    expect:
+      rows:
+        - {sku: 'H-L-B-001',   product_type_code: 'H',   product_type: 'Hoodie', size: 'L',   size_order: 3, colour_code: 'B',  colour_name: 'blue',     model_code: 'H-001',   model_name: 'cumming of age', model_colour_code: 'H-B-001',   is_sku_parsed: true,  is_in_catalogue: true}
+        - {sku: 'sc-Gr-001',   product_type_code: 'SC',  product_type: 'Scarf',  size: 'ONE', size_order: 0, colour_code: 'GR', colour_name: 'graphite', model_code: 'SC-001',  model_name: 'SC-001',         model_colour_code: 'SC-GR-001',  is_sku_parsed: true,  is_in_catalogue: true}
+        - {sku: 'CAP-Bg-6',    product_type_code: 'CAP', product_type: 'Cap',    size: 'ONE', size_order: 0, colour_code: 'BG', colour_name: 'beige',    model_code: 'CAP-006', model_name: 'CAP-006',        model_colour_code: 'CAP-BG-006', is_sku_parsed: true,  is_in_catalogue: true}
+        - {sku: 'H-B-001',     product_type_code: 'H',   product_type: 'Hoodie', size: null,  size_order: null, colour_code: null, colour_name: null,   model_code: null,      model_name: null,             model_colour_code: null,         is_sku_parsed: false, is_in_catalogue: true}
+        - {sku: 'SW-M-B-015',  product_type_code: 'SW',  product_type: null,     size: null,  size_order: null, colour_code: null, colour_name: null,   model_code: null,      model_name: null,             model_colour_code: null,         is_sku_parsed: false, is_in_catalogue: true}
+        - {sku: 'H-XXL-B-001', product_type_code: 'H',   product_type: 'Hoodie', size: null,  size_order: null, colour_code: null, colour_name: null,   model_code: null,      model_name: null,             model_colour_code: null,         is_sku_parsed: false, is_in_catalogue: true}
