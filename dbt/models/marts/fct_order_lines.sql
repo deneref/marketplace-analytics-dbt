@@ -50,7 +50,7 @@ with lines as (
         -- delivered_date is an upper bound (the exact date is only in the realization report). Their revenue is 0,
         -- so fct_sales_daily is unaffected — only "orders received per day" counts shift slightly.
         iff(order_status in ('DELIVERED', 'PARTIALLY_DELIVERED', 'RETURNED'),
-            to_date(to_timestamp_ntz(convert_timezone('Europe/Moscow', status_updated_at))),
+            {{ moscow_date('status_updated_at') }},
             null)                                                   as delivered_date
     from {{ ref('int_order_lines') }}
 

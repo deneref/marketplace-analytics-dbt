@@ -3,8 +3,8 @@
 -- turnover report); the marketplace does not allow changing it after the card is created. market_sku is a
 -- secondary lookup only: it can be absent (card not yet bound) and re-bound.
 --
---   * Type 1: the current card. Names changed 35 times over the order history and nobody needs "the name at the
---     time of sale"; the price at the time of sale lives in fct_order_lines; card history is snap_offers;
+--   * Type 1: the current card. Names change over time and nobody needs "the name at the time of sale";
+--     the price at the time of sale lives in fct_order_lines; card history is snap_offers;
 --   * the row of a SKU comes from the LAST snapshot in which the SKU was seen, not from the latest export:
 --     a deleted card keeps its category, colour and size (is_in_catalogue = false) instead of vanishing from
 --     a year of sales; a partial export is caught by tests/assert_catalogue_not_shrunk.sql, not swallowed;
@@ -12,17 +12,23 @@
 --     marketplace has no such fields; a code that does not fit the convention gets NULLs, not wrong values;
 --   * editorial facts (model name, drop, launch, lifecycle) come from the hand-maintained seeds;
 --   * lifecycle dates only, no sales sums: sums are measures of the fact, dates are descriptive attributes.
--- Table: 51 rows, rebuilt on every run.
+-- Table: a few dozen rows, rebuilt on every run.
+
+{#- The closed list of sizes, in one place: the parser's regex, the sort key and the accepted_values test in the
+    yml all derive from it. Add XS / XXL here (and in the yml) when the brand adds them. -#}
+{% set sizes = ['S', 'M', 'L', 'XL'] %}
 
 {{ config(materialized='table') }}
 
 with catalogue as (
 
-    -- last snapshot in which each SKU was seen; staging already keeps one load per sku × day
+    -- last snapshot in which each SKU was seen; staging already keeps one load per sku × day.
+    -- The window runs before qualify, so "is this the latest export" is known in the same pass.
     select
         sku,
         market_sku,
         snapshot_date,
+        snapshot_date = max(snapshot_date) over ()  as is_in_catalogue,
         product_name,
         market_category_name,
         card_status,
@@ -41,17 +47,11 @@ with catalogue as (
 
 ),
 
-latest_snapshot as (
-
-    select max(snapshot_date) as snapshot_date
-    from {{ ref('stg_ym__offers') }}
-
-),
-
 warehouse_skus as (
 
     -- the label the marketplace warehouse prints for the SKU (K4 for CAP-Bur-006); equals sku for most cards.
-    -- Only the realization report carries it; latest report month wins should it ever change.
+    -- Only the realization report carries it; the latest report (and load) wins should it ever change.
+    -- tests/assert_warehouse_labels_resolve.sql checks that every label of the report lands on a row here.
     select
         sku,
         warehouse_sku
@@ -59,13 +59,13 @@ warehouse_skus as (
     where warehouse_sku is not null
     qualify row_number() over (
         partition by sku
-        order by report_month desc
+        order by report_month desc, _loaded_at desc
     ) = 1
 
 ),
 
--- Convention: <type>-<size>-<colour>-<model number> for sized items (H-L-B-001),
---             <type>-<colour>-<model number>        for one-size items (CAP-BUR-006, SC-GR-001).
+-- Convention (after upper()): <type>-<size>-<colour>-<model number> for sized items (H-L-B-001),
+--                             <type>-<colour>-<model number>        for one-size items (CAP-BUR-006, SC-GR-001).
 -- Which shape applies is decided by product_types.has_sizes, NOT by counting segments —
 -- a code with a missing segment must fail the parse, not silently become a one-size item.
 sku_parts as (
@@ -103,7 +103,7 @@ parsed as (
         case
             when t.product_type_code is null then false                     -- unknown type
             when t.has_sizes
-                then regexp_like(p.sku_upper, '^[A-Z]+-(S|M|L|XL)-[A-Z]+-[0-9]{1,3}$')
+                then regexp_like(p.sku_upper, '^[A-Z]+-({{ sizes | join('|') }})-[A-Z]+-[0-9]{1,3}$')
             else regexp_like(p.sku_upper, '^[A-Z]+-[A-Z]+-[0-9]{1,3}$')
         end                                             as is_sku_parsed
 
@@ -124,7 +124,10 @@ sku_attributes as (
         is_sku_parsed,
         iff(is_sku_parsed, size, null)                                          as size,
         case iff(is_sku_parsed, size, null)
-            when 'ONE' then 0 when 'S' then 1 when 'M' then 2 when 'L' then 3 when 'XL' then 4
+            when 'ONE' then 0
+            {% for s in sizes -%}
+            when '{{ s }}' then {{ loop.index }}
+            {% endfor -%}
         end                                                                     as size_order,
         iff(is_sku_parsed, colour_code, null)                                   as colour_code,
         iff(is_sku_parsed, product_type_code || '-' || model_number, null)      as model_code,          -- H-001
@@ -136,16 +139,16 @@ sku_attributes as (
 
 order_stats as (
 
-    -- lifecycle dates of the SKU as seen in orders. first_ordered_date counts every order, cancelled included:
-    -- it is the first time somebody wanted the item. last_delivered_date counts only units actually received,
-    -- on the day of receipt = status timestamp of a DELIVERED / PARTIALLY_DELIVERED order in the marketplace's
-    -- (Moscow) wall clock — the same rule as delivered_date in fct_order_lines. RETURNED orders are left out:
-    -- their status timestamp is the return, not the receipt. Test orders never count.
+    -- lifecycle dates of the SKU as seen in orders (history starts 2025-01: for older models first_ordered_date
+    -- is the start of the data, not the first demand). first_ordered_date counts every order, cancelled
+    -- included: the first time somebody wanted the item. last_delivered_date counts only units actually
+    -- received, on the day of receipt — the same rule as delivered_date in fct_order_lines (macro moscow_date).
+    -- RETURNED orders are left out: their status timestamp is the return, not the receipt. Test orders never count.
     select
         sku,
-        min(ordered_date)                                                       as first_ordered_date,
+        min(ordered_date)::date                                                 as first_ordered_date,
         max(iff(order_status in ('DELIVERED', 'PARTIALLY_DELIVERED') and units_delivered > 0,
-                to_date(to_timestamp_ntz(convert_timezone('Europe/Moscow', status_updated_at))),
+                {{ moscow_date('status_updated_at') }},
                 null))                                                          as last_delivered_date
     from {{ ref('int_order_lines') }}
     where not is_test_order
@@ -153,7 +156,7 @@ order_stats as (
 
 ),
 
-products as (
+final as (
 
     select
         -- keys
@@ -188,19 +191,18 @@ products as (
         coalesce(c.price_before_discount, c.basic_price)                        as current_price_before_discount,
 
         -- package
-        (c.length_cm * c.width_cm * c.height_cm / 1000)::number(18, 3)             as volume_l,
+        (c.length_cm * c.width_cm * c.height_cm / 1000)::number(18, 3)          as volume_l,
         c.weight_kg,
 
         -- card status
         c.card_status,
         c.is_archived,
-        c.snapshot_date = ls.snapshot_date                                      as is_in_catalogue,
+        c.is_in_catalogue,
         c.snapshot_date                                                         as catalogue_snapshot_date,
 
         current_timestamp()                                                     as dbt_updated_at
 
     from catalogue as c
-    cross join latest_snapshot as ls
     left join sku_attributes as a
         on a.sku = c.sku
     left join warehouse_skus as w
@@ -214,4 +216,4 @@ products as (
 
 )
 
-select * from products
+select * from final
