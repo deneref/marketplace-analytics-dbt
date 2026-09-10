@@ -487,6 +487,8 @@ def build() -> tuple[dict, list[str]]:
         entry["columns"] = columns
         tables_out.append(entry)
     for ident in cols:
+        if ident.startswith("COGS_"):        # partner cost file: documented by hand in models/staging/finance/_finance__sources.yml
+            continue
         if ident not in {t["identifier"] for t in TABLES}:
             missing.append(f"{ident}: table in data/raw but not in TABLES")
     doc = {"version": 2, "sources": [{**SOURCE, "tables": tables_out}]}

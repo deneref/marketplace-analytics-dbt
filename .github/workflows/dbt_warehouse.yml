@@ -1,0 +1,55 @@
+# The real build: synthetic seeds, run end to end on Snowflake, all models + all data tests.
+# Manual for now (workflow_dispatch) because two things are not ready:
+#   1. seeds_gen/generate_demo_seeds.py writes 5 of the 12 demo seeds the models need;
+#   2. the error-severity reconciliation tests need demo data that is internally consistent
+#      (SKU codes in the seller's convention, K1..K5 warehouse labels, continuous cost versions).
+# Add `on: pull_request` once a manual run is green.
+#
+# Safety: --target ci builds into DBT_CI_STAGING / DBT_CI_INTERMEDIATE / DBT_CI_MARTS
+# (macros/generate_schema_name.sql), never into the schemas dev and Looker Studio read.
+name: dbt build on Snowflake (demo seeds)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: dbt-warehouse
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_ROLE: SYSADMIN
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Write the service user's private key to a file
+        # dbt cannot take `private_key` from an env var, only `private_key_path` from a file.
+        # The secret must hold the PEM with its line breaks intact, header and footer included.
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/snowflake_key.pem"
+          printf '%s\n' "$SNOWFLAKE_PRIVATE_KEY" > "$key"
+          grep -q -- '-----BEGIN .*PRIVATE KEY-----' "$key" \
+            || { echo "::error::secret SNOWFLAKE_PRIVATE_KEY is empty or not a PEM key"; exit 1; }
+          echo "SNOWFLAKE_PRIVATE_KEY_PATH=$key" >> "$GITHUB_ENV"
+
+      - run: mkdir -p ~/.dbt && cp dbt/profiles.example.yml ~/.dbt/profiles.yml
+      - name: dbt deps
+        working-directory: dbt
+        run: dbt deps
+      - name: dbt build
+        working-directory: dbt
+        run: |
+          dbt build --vars '{"use_demo_seeds": true}' --target ci
