@@ -151,7 +151,19 @@ while d <= END:
                 })
     d = next_day
 
-cogs = [{"SKU": s["sku"], "VALID_FROM": START.isoformat(), "UNIT_COST": s["cost"]} for s in skus]
+# same layout as data/raw/cogs/<date>/by_sku.csv (see dbt/models/staging/finance/_finance__sources.yml); one version per SKU
+cogs = [{
+    "SKU": s["sku"], "PRODUCT_NAME": s["name"], "BATCH_LABEL": "Партия 1", "BATCH_PERIOD": START.strftime("%Y"),
+    "BATCH_UNITS": 100, "VALID_FROM": START.isoformat(), "VALID_TO": "",
+    "UNIT_COST": s["cost"], "CURRENCY": "RUB",
+    "COST_MATERIALS": round(s["cost"] * 0.3, 2), "COST_MANUFACTURING": round(s["cost"] * 0.5, 2),
+    "COST_PRINT": round(s["cost"] * 0.1, 2), "COST_LABEL": 0, "COST_PACKAGING": round(s["cost"] * 0.05, 2),
+    "COST_SHIPPING": round(s["cost"] - round(s["cost"] * 0.3, 2) - round(s["cost"] * 0.5, 2)
+                           - round(s["cost"] * 0.1, 2) - round(s["cost"] * 0.05, 2), 2), "COST_OTHER": 0,
+    "COST_BASIS": "batch_actual", "IS_ESTIMATE": "false", "HAS_COST_BREAKDOWN": "true", "SKU_IN_CATALOGUE": "true",
+    "SOURCE_FILE": "demo", "SOURCE_SHEET": "demo", "NOTE": "",
+    "_LOADED_AT": LOADED_AT, "_SOURCE_FILE": "demo/cogs/2026-01-05/by_sku.csv",
+} for s in skus]
 
 
 def write(name: str, rows: list[dict]) -> None:

@@ -17,13 +17,15 @@ marketplace_analytics:
       schema: DBT_DEV
       threads: 4
       client_session_keep_alive: false
-    ci:                               # GitHub Actions: synthetic seeds, schema DBT_CI — never touches DBT_DEV
+    ci:                               # GitHub Actions: synthetic seeds, schemas DBT_CI_* — never touches dev
       type: snowflake
       account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
       user: "{{ env_var('SNOWFLAKE_USER') }}"
-      private_key: "{{ env_var('SNOWFLAKE_PRIVATE_KEY', '') }}"   # PEM text from a GitHub secret
+      # dbt does not support passing the key itself through env_var() (docs.getdbt.com, Connect Snowflake):
+      # the workflow writes the PEM from the GitHub secret to a file and points this variable at it.
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') }}"
       role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
       warehouse: DBT_WH
       database: MARKETPLACE
-      schema: DBT_CI
+      schema: DBT_CI                  # macros/generate_schema_name.sql prefixes every custom schema with it
       threads: 4
