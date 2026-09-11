@@ -1,0 +1,129 @@
+version: 2
+
+models:
+  - name: rpt_sales_daily
+    description: >
+      The sales page of the dashboard, one wide row per day × sku × outcome: fct_sales_daily (outcome =
+      delivered) unioned with the fees of parcels that came back in full (outcome = unredeemed / returned,
+      aggregated from fct_order_lines to the day the units were received back), joined to the product attributes
+      the facts deliberately do not carry. dim_products holds one row per sku, so the join adds columns and never
+      rows. SUM(contribution_margin) over all rows is the margin AFTER unredeemed and returned parcels; filtered to
+      outcome = delivered it is the margin of what was sold. Partially unredeemed lines are inside the delivered
+      rows already (their fees are not scaled) and are not repeated. This layer exists because the Snowflake
+      connector for Looker Studio cannot push date filters down (the period control never narrows the query),
+      counts its 1M-row / 50MB quota per source, and blends poorly; so a dashboard page reads exactly one view.
+      Money is RUB; sales are recognised on the day the buyer received the goods and restated on returns, losses
+      on the day the parcel came back (later than sales — the last weeks of a period undercount losses more).
+      Measures pass through from the facts untouched, so the tests that guard them stay on the facts; what is
+      tested here is the join and the union — each half reconciles to its own fact in tests/. Ratios are not stored: margin %, fee share, average price and the estimated-cost share are divisions of these sums in BI.
+      Column names are ASCII (a connector requirement) and must stay identical to rpt_sales_daily_public, which
+      is the same view with money multiplied by a secret constant — the public report is a copy of this one with
+      the data source swapped, and Looker breaks every widget if the schemas differ.
+    data_tests:
+      # the arithmetic the dashboard divides: holds on both kinds of rows
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "contribution_margin = revenue - fee_total - cogs"
+      # a loss row is fees only: nothing sold, nothing costed, margin is the fees with the sign flipped
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "outcome = 'delivered' or (units_delivered = 0 and units_lost > 0 and revenue = 0 and cogs = 0 and contribution_margin = -fee_total)"
+      # a delivered row carries no lost units — partial parcels stay inside the delivered row with their full fees
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "outcome <> 'delivered' or (units_lost = 0 and units_delivered > 0)"
+    columns:
+      - name: sales_daily_key
+        description: "Surrogate key of the grain: event_date + sku + outcome. unique here is the only guard against the dim join fanning out — the reconciliation tests cannot see a fan-out."
+        data_tests: [unique, not_null]
+      - name: event_date
+        description: "Delivered rows: day the buyer received the goods (the sales date). Loss rows: day the units were received back by the warehouse (rejected_date / returned_date), falling back to the order's status change. The dashboard's time axis — check it is the date range dimension on every chart in Looker: launch_date is the other date field and would otherwise be picked."
+        data_tests: [not_null]
+      - name: sku
+        description: "Seller's SKU (offerId = shopSku)."
+      - name: outcome
+        description: "delivered — a sales row from fct_sales_daily; unredeemed / returned — a loss row: the parcel came back in full, revenue 0, cogs 0, fee_total > 0."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['delivered', 'unredeemed', 'returned']
+
+      - name: product_name
+        description: "Card name from the last catalogue snapshot the sku appeared in. Label, not a grouping key — use model_name."
+      - name: product_type_code
+        description: "H / L / T / SH / CAP / SC, parsed from the seller's SKU code."
+      - name: product_type
+        description: "Product type from the product_types seed: Hoodie, Long sleeve, T-shirt, Shirt, Cap, Scarf — the dashboard's main axis. Null means the SKU code did not parse; assert_sku_codes_parse warns about it upstream."
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: model_code
+        description: "Type + number (H-001): the model without size or colour."
+      - name: model_name
+        description: "Editorial model name from the product_models seed, falling back to model_code when the seed has no row."
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: model_colour_code
+        description: "Type + colour + number (H-GR-001): the colourway, the level at which a restock is decided."
+      - name: colour_name
+        description: "Colour family name from the colour_codes seed."
+      - name: size
+        description: "S / M / L / XL, or ONE for sizeless items."
+      - name: size_order
+        description: "0–4. Sort key: without it Looker orders sizes alphabetically as L, M, S, XL."
+      - name: collection
+        description: "Drop the model belongs to, from the product_models seed."
+      - name: lifecycle_status
+        description: "new / core / limited / discontinued — the production status, not the card status."
+      - name: launch_date
+        description: "Model launch date from the seed."
+      - name: days_since_launch
+        description: >
+          Days between the model's launch and this sale — the axis for a drop cohort ("units by day N after
+          launch"), which stays readable where a time series does not: the brand sells a median of three units
+          a day, so day-to-day movement is largely noise. Never negative in the data checked (1 469 sold lines,
+          none before their launch_date); null when the seed has no launch_date for the model. NOTE: the seed's
+          launch_date is a proxy (the model's first order date) measured against a receipt date, so day 0 never
+          occurs — observed range is 1…577 — and cohorts shift if a proxy is replaced by a real launch date.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+              config:
+                severity: warn
+      - name: is_in_catalogue
+        description: "Whether the sku was present in the latest catalogue snapshot. False = card withdrawn; its sales history stays. Null means the sku has no dim_products row at all — same cause as a null product_type, so the same severity."
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+
+      - name: units_delivered
+        description: "Units received and kept, after returns. 0 on loss rows."
+      - name: units_lost
+        description: "Units that came back — unredeemed or returned in full. 0 on delivered rows. Unredeemed share of a sku in BI = SUM(units_lost) / (SUM(units_delivered) + SUM(units_lost))."
+        data_tests: [not_null]
+      - name: sku_orders_count
+        description: "Orders that contained this sku on this day. NOT additive across skus: an order holding a hoodie and a cap counts once in each sku's row, so summing this column overstates orders by the share of multi-sku orders. Real orders per day are count(distinct order_id) over fct_order_lines, which this page does not read."
+      - name: lines_count
+        description: "Order lines aggregated into this row."
+        data_tests: [not_null]
+
+      - name: revenue
+        description: "Revenue recognised on this day, RUB: the delivered share of the price before marketplace-funded discounts. 0 on loss rows."
+      - name: fee_total
+        description: "All marketplace fees allocated to the sold lines, RUB. Excludes bid_fee, which is a declared bid and not a charge."
+      - name: fee_boost
+        description: "The promotion (AUCTION_PROMOTION) part of fee_total, RUB — the one cost the brand changes day to day. Inside fee_total, never on top of it; promotion share = fee_boost / revenue in BI."
+      - name: cogs
+        description: "Cost of the delivered units at the unit cost valid on delivered_date, RUB."
+      - name: cogs_estimated
+        description: "The part of cogs resting on a planned rather than actual cost. Share of the margin that is an estimate = cogs_estimated / cogs in BI."
+      - name: contribution_margin
+        description: "revenue − fee_total − cogs, RUB. Summed over all rows: contribution margin after unredeemed and returned parcels (their rows carry −fee_total). Filtered to outcome = delivered: the margin of what was sold. Still not a P&L — fixed costs and the joint-promotion write-offs (netting) are not here."
+
