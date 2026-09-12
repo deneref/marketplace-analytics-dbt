@@ -412,6 +412,189 @@ models:
       - name: subsidies_json
         description: "Raw subsidies array kept as VARIANT: [{operationType: ACCRUAL|DEDUCTION, type: SUBSIDY|YANDEX_CASHBACK, amount}]. Present for ~70% of orders. Unnest in a stg_ym__order_subsidies model when the revenue base question is settled."
 
+  - name: stg_ym__business_orders
+    description: >
+      Order-level fields of the business-orders endpoint (POST v1/businesses/{id}/orders): one row per marketplace
+      order, latest load wins. Counts in this block are a census as of 2026-09-12 (2 383 orders), taken from the raw
+      files; "unredeemed" throughout means the 740 orders with at least one unit that came back uncollected — 693
+      cancelled in delivery plus 47 partially delivered — and where only the fully cancelled 693 are meant, it says so.
+      Why a second order source: orders_stats has neither a cancellation reason nor any delivery date, so an unredeemed
+      parcel there is only CANCELLED_IN_DELIVERY. This model adds the three columns that separate the cases —
+      order_substatus (the reason as the marketplace records it), real_delivery_date (the day the goods reached the
+      pickup point) and is_cancel_requested (the buyer pressed cancel) — plus the delivery channel, the shipping
+      warehouse at order level and the payment method. Money, the fine-grained order status and the per-unit
+      REJECTED / RETURNED events stay with orders_stats, whose figures reconcile with the realization report.
+      Nothing reads this model yet: the loss-reason tree that will consume it is the next change in int_order_lines,
+      and the storage windows that tree needs are its business logic, not this model's.
+      Loaded by a one-off backfill; there is no scheduled catch-up yet, so the 21 orders still in flight keep a stage
+      substatus while orders_stats moves them on. Staleness is not guarded by source freshness (a manual backfill
+      would warn forever and be ignored) but by tests/assert_business_orders_matches_orders_stats.sql, which names the
+      orders that are missing here.
+    data_tests:
+      # Trap 2 as a test: on a delivered order the substatus is the delivery stage, never a reason (1 521 / 1 521).
+      # If this warns, the reason mapping downstream is reading a column that no longer means what it did.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "order_status_coarse <> 'DELIVERED' or order_substatus = 'DELIVERY_SERVICE_DELIVERED'"
+          config: {severity: warn}
+      # The invariant that makes real_delivery_date trustworthy AND the only real detector of a date-format change:
+      # a delivered order always has it (1 521 / 1 521), and a failed parse empties the column and fails here.
+      # The range test below cannot do that job — it skips nulls by construction.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "order_status_coarse <> 'DELIVERED' or real_delivery_date is not null"
+      # a parcel cannot arrive before the order was placed (marketplace wall clock, as everywhere in the project)
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "real_delivery_date is null or real_delivery_date >= {{ moscow_date('ordered_at') }}"
+      # the promised window is a window
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "planned_delivery_to_date >= planned_delivery_from_date"
+    columns:
+      - name: order_id
+        description: "Marketplace order id (orderId), as text — the join key to stg_ym__orders and every other orders_stats staging model. Coverage between the two sources is checked by tests/assert_business_orders_matches_orders_stats.sql, not by a relationships test: this source refreshes on its own schedule, so 37 orders here are newer than the last orders_stats pull and a forward relationships test would warn on every run."
+        data_tests: [unique, not_null]
+      - name: program_type
+        description: "Placement model of the shop for this order: FBY on every order so far. The only per-order source of it — orders_stats has no such field — so it survives a future FBS mix."
+      - name: order_status_coarse
+        description: >
+          Status in the ORDERS vocabulary, which is coarser than orders_stats.order_status and is not a substitute for
+          it: DELIVERED (1 521) covers delivered, partially delivered and fully returned orders; CANCELLED (841) covers
+          cancelled-before-processing, cancelled-in-processing and unredeemed alike. Its job here is to say which
+          vocabulary order_substatus is speaking in — hence the name. For the real status join stg_ym__orders.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['DELIVERED', 'CANCELLED', 'PICKUP', 'DELIVERY', 'PROCESSING']
+              config: {severity: warn}     # PENDING / UNPAID / PARTIALLY_RETURNED exist in the API and have not occurred yet
+      - name: order_substatus
+        description: >
+          Processing stage while the order is live, cancellation REASON once it is cancelled — one column, two
+          meanings, told apart by order_status_coarse. Filled on every row. Never read it as the buyer's reason on its
+          own: USER_CHANGED_MIND ("cancelled for personal reasons") sits on 351 unredeemed orders whose parcel had
+          already reached the pickup point and where nobody pressed cancel. The reason is built in int_order_lines
+          from this column together with real_delivery_date and is_cancel_requested, and the mapping from value to
+          reason lives there — this list is flat on purpose, so the two do not drift apart. FULL_NOT_RANSOM is in the
+          API enum but absent from its documentation (literally "full non-purchase"); it is not a synonym of
+          PICKUP_EXPIRED — the parcel had arrived in every case observed. The docs allow unlisted values, so the test
+          warns rather than fails, but a new value must be classified in int_order_lines before it lands in the
+          default branch unnoticed.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['STARTED', 'READY_TO_SHIP', 'READY_FOR_LAST_MILE', 'DELIVERY_SERVICE_RECEIVED',
+                         'PICKUP_SERVICE_RECEIVED', 'DELIVERY_SERVICE_DELIVERED', 'USER_CHANGED_MIND',
+                         'USER_BOUGHT_CHEAPER', 'USER_REFUSED_PRODUCT', 'USER_REFUSED_QUALITY',
+                         'USER_REFUSED_DELIVERY', 'USER_WANTS_TO_CHANGE_ADDRESS', 'USER_WANTS_TO_CHANGE_DELIVERY_DATE',
+                         'USER_WANTED_ANOTHER_PAYMENT_METHOD', 'USER_FORGOT_TO_USE_BONUS', 'USER_NOT_PAID',
+                         'USER_HAS_NO_TIME_TO_PICKUP_ORDER', 'REPLACING_ORDER', 'PICKUP_EXPIRED', 'FULL_NOT_RANSOM',
+                         'DELIVERY_SERVICE_UNDELIVERED', 'DELIVERY_PROBLEMS', 'DELIVERY_NOT_MANAGED_REGION',
+                         'WAREHOUSE_FAILED_TO_SHIP', 'DAMAGED_BOX', 'SERVICE_FAULT', 'CUSTOM']
+              config: {severity: warn}
+      - name: is_cancel_requested
+        description: >
+          TRUE when the BUYER pressed cancel (101 of the 740 unredeemed orders). FALSE means no cancellation request
+          was recorded — on a delivered order that is simply "nothing to cancel", and on a cancelled one it covers
+          everything else at once: refused at the counter, storage expired, or the marketplace itself ended the order.
+          So it is one-sided evidence: TRUE is a fact about the buyer, FALSE is the absence of one. Read it only
+          together with order_status_coarse. The documented filter for this field is DBS-only, yet it is returned for
+          FBY on every row — which is why the test below warns instead of failing.
+        data_tests:
+          - not_null:
+              config: {severity: warn}     # the vendor does not list it as required: a gap is news, not a broken build
+      - name: ordered_at
+        description: "Order creation timestamp (creationDate), timestamp_tz with the +03:00 offset. Equals stg_ym__orders.ordered_date at day level on every shared order — checked, and kept checked by tests/assert_business_orders_matches_orders_stats.sql. The number of fractional digits varies across the history, hence try_to_timestamp_tz."
+        data_tests: [not_null]
+      - name: order_updated_at
+        description: >
+          Timestamp of the last change (updateDate). On a cancelled order this is the moment of cancellation, not the
+          day the parcel came back: it equals orders_stats.status_updated_at to the second on 2 331 of the 2 346 shared
+          orders (the other 15 changed after that source was last pulled), while the warehouse books the returned units
+          1 to 5 days later. Compared with real_delivery_date it says whether the parcel was ended inside the
+          pickup-point storage window or after it expired — the raw shape: 167 unredeemed parcels ended on the day they
+          arrived, then a second bump of 73 on day 8, and a third at day 15 (a buyer can extend storage), which is why
+          the threshold is a decision for int_order_lines and not a constant here. Prefixed to keep it apart from
+          stg_ym__orders.status_updated_at in joins.
+        data_tests:
+          - not_null:
+              config: {severity: warn}     # not listed as required by the vendor
+      - name: delivery_type
+        description: "PICKUP (self-pickup, 1 936 orders) | DELIVERY (courier, 447) | POST. Every unredeemed parcel in this brand's history is PICKUP — courier orders never end as an unredeemed parcel, which is itself worth knowing."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['PICKUP', 'DELIVERY', 'POST']
+              config: {severity: warn}     # the API enum also has DIGITAL and UNKNOWN
+      - name: dispatch_type
+        description: >
+          Where the order was dispatched to, as the marketplace classifies it: MARKET_BRANDED_OUTLET (1 925) |
+          UNKNOWN (458); the API enum also holds BUYER and SHOP_OUTLET, unseen so far. NOT a pickup-vs-courier flag
+          and not a substitute for delivery_type: the cross-tab is 1 901 pickup + outlet, 423 courier + unknown, but
+          also 35 pickups with UNKNOWN and 24 courier orders with MARKET_BRANDED_OUTLET. And it does not tell a
+          staffed outlet (7 days of storage) from a locker (2 days) — the enum has no locker value at all, so the
+          locker branch of the loss-reason tree has no source in this data and int_order_lines must not pretend it
+          does; the window has to be keyed on delivery_type = 'PICKUP' and treat UNKNOWN as unknown.
+        data_tests:
+          - not_null:
+              config: {severity: warn}
+          - accepted_values:
+              arguments:
+                values: ['MARKET_BRANDED_OUTLET', 'UNKNOWN']
+              config: {severity: warn}
+      - name: delivery_service_id
+        description: "Id of the last-mile service, as text: 418 orders on 18881, then a long tail of ids with a handful of orders each. The tail looks like outlet-level granularity, which would make a per-outlet unredeemed rate possible — but the API we use has no mapping from these ids to names or addresses, so nothing may be built on that reading until it is verified."
+      - name: order_warehouse_id
+        description: "Market warehouse the order shipped FROM (172 Софьино, 313, 300, 305, 302 …), as text. Same id space as stg_ym__order_lines.warehouse_id but ORDER-level, and available on cancelled orders too — which is what lets the open question 'do regional shipments get unredeemed more often' be answered at all. Prefixed because a multi-warehouse order contradicts the line-level column, and a silent swap would answer that question wrongly."
+        data_tests:
+          - not_null:
+              config: {severity: warn}     # not listed as required by the vendor
+      - name: planned_delivery_from_date
+        description: "First day of the delivery window the buyer was promised. PLANNED, not fact."
+        data_tests: [not_null]
+      - name: planned_delivery_to_date
+        description: "Last day of the promised window; falls back to planned_delivery_from_date, which is what the API means by an absent toDate. PLANNED — never date anything by it, the fact is real_delivery_date."
+        data_tests: [not_null]
+      - name: real_delivery_date
+        description: >
+          The day the goods reached the PICKUP POINT (for self-pickup) or the buyer (for a courier) — the API's own
+          definition, and the most useful column here: its presence proves the parcel travelled the whole way. Filled
+          on 2 183 of 2 383 orders and on 639 of the 693 fully unredeemed ones, so 92 % of unredeemed parcels did
+          arrive and only 54 were cancelled earlier. NULL means "never arrived" OR "not yet" — read it with
+          order_status_coarse, never alone.
+          **It is not the day of purchase and must not become the sales date.** Checked on 1 070 delivered pickup
+          orders: the buyer collects the parcel the same day in 37 % of cases, the next day in 25 %, and 3 % wait
+          eight days or more. The receipt date the project already uses (status_updated_at of a delivered order) is
+          therefore the closer figure, and this column's own use is the other way round: the gap between the two is
+          how long a parcel waits at the counter.
+        data_tests:
+          - dbt_utils.not_null_proportion:
+              arguments:
+                at_least: 0.85
+              config: {severity: warn}     # 0.92 today; a drop means either a parse failure or a shift in the delivery mix
+      - name: payment_type
+        description: "PREPAID (1 381) | POSTPAID (1 002). Deliberately the same name and meaning as stg_ym__orders.payment_type — the two are compared in tests/assert_business_orders_matches_orders_stats.sql, which today names exactly one order where they differ (orders_stats reports the type of a cancelled order as UNKNOWN in some cases)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['PREPAID', 'POSTPAID']
+              config: {severity: warn}     # UNKNOWN is documented for cancelled orders
+      - name: payment_method
+        description: "How it was paid — information orders_stats does not carry at all: YANDEX (card at checkout, 1 299), BOUND_CARD_ON_DELIVERY (847), CARD_ON_DELIVERY (87), SBP (82), BNPL_ON_DELIVERY / BNPL_BANK_ON_DELIVERY / BNPL_TBYB (68 together — pay later, TBYB = try before you buy). Worth watching against the unredeemed rate: these are the cheapest ways for a buyer to reserve a fitting."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['YANDEX', 'BOUND_CARD_ON_DELIVERY', 'CARD_ON_DELIVERY', 'SBP', 'BNPL_ON_DELIVERY', 'BNPL_BANK_ON_DELIVERY', 'BNPL_TBYB']
+              config: {severity: warn}
+      - name: is_test_order
+        description: "Marketplace test order (fake). FALSE everywhere — the endpoint excludes test orders unless asked — but filter on it downstream anyway, as with orders_stats."
+        data_tests: [not_null]
+
   - name: stg_ym__realization_lines
     description: >
       The five appendices of the monthly goods-realization report ("Отчёт по реализации") unioned into one event
