@@ -722,6 +722,117 @@ sources:
             description: >-
               Path of the source file relative to data/raw/ (e.g. orders_stats/2026-09-04/2025-01-01_2025-03-31.jsonl).
               Carries the download date and the requested period; replay / dedup key.
+      - name: business_orders
+        identifier: BUSINESS_ORDERS
+        description: >-
+          Order history WITH the cancellation reason and the real delivery date, from POST v1/businesses/{id}/orders (2
+          383 orders on 2026-09-12, backfilled in 30-day windows by creation date — the API caps one request at 30 days
+          and creationDateTo is EXCLUSIVE, so windows abut and an order appears in exactly one file; still deduplicate by
+          ORDERID keeping the latest _LOADED_AT, because re-runs overlap). Exists because ORDERS_STATS carries neither SUBSTATUS
+          nor any delivery date: there, every unredeemed parcel is CANCELLED_IN_DELIVERY and 'never collected' cannot be
+          told from 'refused at the counter'. Three fields here settle it — SUBSTATUS, DELIVERY.dates.realDeliveryDate (the
+          day the goods reached the PICKUP POINT) and CANCELREQUESTED. Covers 100 % of the ORDERS_STATS orders (all 2 346
+          matched on 2026-09-12) plus 37 newer ones; getOrders would refuse orders cancelled over 30 days ago, this method
+          does serve them. Nested JSON kept as text (ITEMS, PRICES, DELIVERY); _RAW_JSON holds the whole record. Money is
+          NOT taken from here — fees live in ORDERS_STATS.COMMISSIONS.
+        columns:
+          - name: BUYERTYPE
+            description: PERSON (individual) | BUSINESS (organisation).
+          - name: CAMPAIGNID
+            description: Campaign / shop id. Constant for this seller.
+          - name: CANCELREQUESTED
+            description: >-
+              TRUE when the BUYER asked to cancel (in the app), FALSE when the cancellation came from the marketplace's
+              own processing. The documented filter is DBS-only, but the field is returned for FBY and is the cleanest split
+              between 'changed their mind remotely' and 'the parcel was ended at the counter': 101 of 740 unredeemed orders
+              have TRUE.
+          - name: CREATIONDATE
+            description: >-
+              Order creation timestamp, ISO 8601 with the +03:00 (Moscow) offset. The field the backfill windows filter
+              on.
+          - name: DELIVERY
+            description: >-
+              JSON of the delivery: {type: PICKUP|DELIVERY|POST, serviceName, deliveryServiceId, warehouseId, deliveryPartnerType,
+              dispatchType (MARKET_BRANDED_OUTLET = a Market pickup point, UNKNOWN otherwise), dates {fromDate, toDate,
+              fromTime, toTime, realDeliveryDate}}. **realDeliveryDate is the reason this source exists**: documented as
+              the day the goods reached the pickup point (for self-pickup) or the buyer (for a courier), YYYY-MM-DD in the
+              data although the spec says DD.MM.YYYY. Filled on 2 183 of 2 383 orders; on 639 of the 693 unredeemed ones
+              — so 92 % of unredeemed parcels did reach the pickup point and only 54 were cancelled before arrival. fromDate/toDate
+              are the PLANNED window, not the fact. Every unredeemed order so far is type = PICKUP: courier orders in this
+              brand's history never end as an unredeemed parcel.
+          - name: EXTERNALORDERID
+            description: >-
+              Order id in the seller's own system; equals ORDERID for this seller.
+          - name: FAKE
+            description: >-
+              TRUE = marketplace test order. No test orders came back in the backfill (the endpoint excludes them unless
+              asked), but keep the filter downstream.
+          - name: ITEMS
+            description: >-
+              JSON array of the order lines: [{id, offerId (= shopSku), offerName, count, prices {payment, subsidy, vat},
+              instances [{cis}], requiredInstanceTypes, itemStatuses [{status: CREATED|SHIPPED|CANCELLED|DELIVERED_TO_BUYER|LOST|REJECTED|RETURNED,
+              count}]}]. itemStatuses is a per-unit status count and a cross-check on ORDERS_STATS.ITEMS[].details, which
+              is what the models use; prices here are per unit and are NOT the fee basis.
+          - name: ORDERID
+            description: >-
+              Marketplace order id. Joins ORDERS_STATS.ID, UNITED_ORDERS_*.ORDER_ID and GOODS_REALIZATION_*.PARTNER_ORDER_ID.
+              One row per order per download.
+            data_tests:
+              - not_null
+          - name: PAYMENTMETHOD
+            description: >-
+              How it was paid: YANDEX (card on the marketplace), CARD_ON_DELIVERY, CASH_ON_DELIVERY, CREDIT, …
+          - name: PAYMENTTYPE
+            description: >-
+              PREPAID (paid before receipt) | POSTPAID (paid on receipt) — the strongest predictor of an unredeemed parcel
+              in this data (11 % vs 59 %).
+          - name: PRICES
+            description: >-
+              JSON {payment, subsidy} for the whole order: what the buyer pays and the marketplace-funded part. Benchmark
+              only — revenue is built from ORDERS_STATS prices, which reconcile with the realization report.
+          - name: PROGRAMTYPE
+            description: >-
+              Placement model of the shop: FBY for every row here.
+          - name: SOURCEPLATFORM
+            description: >-
+              Where the order was placed: MARKET, and other platforms of the ecosystem.
+          - name: STATUS
+            description: >-
+              Order status in the ORDERS vocabulary, which is NOT the ORDERS_STATS one: CANCELLED (not CANCELLED_IN_DELIVERY
+              / _IN_PROCESSING / _BEFORE_PROCESSING), DELIVERED, DELIVERY, PICKUP, PROCESSING, RETURNED, PARTIALLY_RETURNED,
+              PENDING, UNPAID. Which kind of cancellation it was is not here — read it from ORDERS_STATS.STATUS, and the
+              REASON from SUBSTATUS.
+          - name: SUBSTATUS
+            description: >-
+              Processing stage (STATUS = PROCESSING) or CANCELLATION REASON (STATUS = CANCELLED). Filled on every row. Do
+              NOT read it as the buyer's reason on its own: USER_CHANGED_MIND ('cancelled for personal reasons') sits on
+              351 unredeemed orders where the parcel had already reached the pickup point and nobody asked to cancel. The
+              reason is a combination of SUBSTATUS, realDeliveryDate and CANCELREQUESTED — see int_order_lines. Values seen
+              on unredeemed orders (693 on 2026-09-12): USER_CHANGED_MIND 380, PICKUP_EXPIRED 119, FULL_NOT_RANSOM 83 (undocumented;
+              literally 'full non-purchase'), USER_HAS_NO_TIME_TO_PICKUP_ORDER 13, USER_BOUGHT_CHEAPER 18, REPLACING_ORDER
+              12, USER_REFUSED_QUALITY 8, DELIVERY_SERVICE_UNDELIVERED 8, USER_REFUSED_PRODUCT 6, USER_WANTS_TO_CHANGE_ADDRESS
+              9, CUSTOM 10, and a tail of one-offs. The enum is open: the docs say other values may appear and need not
+              be handled.
+          - name: UPDATEDATE
+            description: >-
+              Timestamp of the last change, ISO 8601 with offset. On a cancelled order this is the moment of cancellation
+              — compared with DELIVERY.dates.realDeliveryDate it says whether the parcel was ended inside the pickup-point
+              storage window (7 days at a Market outlet, 2 in a locker) or after it expired. The data shows the shape: 167
+              unredeemed orders ended the day the parcel arrived, then a second bump of 73 on day 8.
+          - name: _RAW_JSON
+            description: >-
+              The whole source record as JSON text — parse_json() in staging for anything not broken out into a column.
+          - name: _LOADED_AT
+            description: >-
+              UTC timestamp (ISO 8601) when load_to_snowflake.py wrote the row. Freshness field; with _SOURCE_FILE it identifies
+              a load batch.
+          - name: _SOURCE_FILE
+            description: >-
+              Path of the source file relative to data/raw/ (e.g. orders_stats/2026-09-04/2025-01-01_2025-03-31.jsonl).
+              Carries the download date and the requested period; replay / dedup key.
+          - name: NOTES
+            description: >-
+              Free-text note attached to the order (present on 196 orders). Not used downstream; may hold support comments.
       - name: offer_mappings
         identifier: OFFER_MAPPINGS
         description: >-
