@@ -21,6 +21,16 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
             expression: "not (line_status = 'cancelled' and units_delivered <> 0)"
+      # a reason is attached only to lines that actually lost units: an order-level attribute smeared over the lines
+      # the buyer KEPT is how a dashboard reports refusals on sold goods
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "loss_reason is null or units_rejected + units_returned > 0"
+      # the reason and its inference flag are two separate CASE expressions over the same conditions: they are set
+      # together or not at all
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(loss_reason is null or loss_reason in ('unknown', 'not_in_source')) = (loss_reason_is_inferred is null)"
     columns:
       - name: order_line_key
         description: "Surrogate key from stg_ym__order_lines (order_id + line_index)."
@@ -62,8 +72,59 @@ models:
         data_tests: [not_null]
       - name: units_returned
         data_tests: [not_null]
+      - name: units_rejected_defect
+        description: "Of units_rejected, the units the marketplace warehouse booked as DEFECT. Lower bound: stockType is only set once the parcel is processed."
+        data_tests: [not_null]
+      - name: units_returned_defect
+        description: "Of units_returned, the units booked as DEFECT. Same lower bound."
+        data_tests: [not_null]
       - name: units_delivered
         description: "units_ordered − units_rejected − units_returned; 0 for orders cancelled before shipment (they carry no events). Provisional while is_final is FALSE."
+        data_tests: [not_null]
+      - name: loss_reason
+        description: >
+          Why the units of THIS line came back: refused_at_handover | not_collected | cancelled_by_buyer |
+          delivery_failed | unknown. NULL when nothing came back (the normal case) and NULL on returned lines — a
+          return happens after receipt and the buyer's own reason for it lives in the returns API, which is not
+          ingested; 'unknown' there would pretend the question had been asked. Two sources meet in this column and the
+          priority is deliberate: the line-level evidence wins (the order kept some units and lost others → the parcel
+          was opened → 'refused_at_handover'), because a partially unredeemed order is not cancelled at all and the
+          marketplace states no reason for it. Everything else takes the order's reason from int_order_cancellations,
+          falling back to 'unknown' for orders the newer source has not covered yet.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['refused_at_handover', 'not_collected', 'cancelled_by_buyer', 'not_paid', 'delivery_failed',
+                         'unknown', 'not_in_source']
+      - name: loss_reason_is_inferred
+        description: "Whether this line's reason rests on the storage-window inference (int_order_cancellations) rather than on a statement. FALSE for the line-level evidence — there the parcel was demonstrably opened. NULL wherever there is no reason to speak of: no refusal on the line, or a reason we do not have ('unknown' / 'not_in_source'), where FALSE would read as 'rests on a statement'."
+      - name: order_cancellation_reason
+        description: "The ORDER-level reason as int_order_cancellations decided it — the input to loss_reason, kept for audit. NULL unless the order was cancelled, which is why it must not be read as the line's reason: on a partially unredeemed order it is NULL while loss_reason is 'refused_at_handover'."
+      - name: order_reason_is_inferred
+        description: "The order-level inference flag from int_order_cancellations, next to order_cancellation_reason. Use loss_reason_is_inferred for anything line-level."
+      - name: is_in_business_orders
+        description: "Whether the order exists in the newer source at all. Separates 'the order has no reason' from 'the order has not been pulled yet' — the latter becomes loss_reason 'not_in_source', which tests/assert_loss_reason_coverage.sql watches so a stale backfill cannot quietly grow."
+        data_tests: [not_null]
+      - name: order_substatus
+        description: "Raw marketplace substatus from the business-orders source, for ANY order (a processing stage on live ones, a cancellation reason on cancelled ones) — taken from staging, not through int_order_cancellations, which keeps only cancellations. Carried so a single order can be audited without joining back."
+      - name: real_delivery_date
+        description: "Day the parcel reached the pickup point or the buyer. NOT a sales date (for self-pickup the buyer collects 0 to 8+ days later); its use is the gap to delivered_date — how long a parcel waited at the counter."
+      - name: order_units_delivered
+        description: "Units the whole ORDER kept, repeated on every line of it. Order-level, so never sum it at line grain — it exists to derive is_order_partly_kept and for analyses."
+        data_tests: [not_null]
+      - name: order_units_lost
+        description: "Units the whole ORDER lost (rejected + returned), repeated on every line. Order-level, not additive at this grain."
+      - name: order_units_rejected
+        description: "Units the whole ORDER lost to REFUSAL (rejected only, no returns), repeated on every line. The basis of is_order_partly_kept: a return happens after the whole order was received and says nothing about a refusal at the counter."
+        data_tests: [not_null]
+      - name: is_order_partly_kept
+        description: >
+          The order kept at least one unit AND had at least one REJECTED: the parcel reached the buyer, was opened, and
+          part of it was handed back. Rejections only — a return would make this true for a fully received order and
+          label a post-purchase return as a refusal at the counter. This is the only evidence in stats/orders that separates "did not collect the parcel" from
+          "held the item and handed it back" — the marketplace reports both as CANCELLED_IN_DELIVERY and this report
+          carries no substatus. Used by rpt_sales_daily to split unredeemed. True on 54 lines of 47 orders today.
+          Not proof: a multi-parcel order could deliver one parcel and lose another in transit.
         data_tests: [not_null]
       - name: fee_share
         description: "Share of the line in the order's price_buyer_total (falls back to units when the order is free). Sums to 1 per order."
@@ -75,6 +136,121 @@ models:
                 max_value: 1
       - name: fee_total
         description: "All fees of the order allocated to this line, RUB. Sum per order = sum(stg_ym__order_fees.fee_amount) — see tests/assert_fees_allocation_sums.sql."
+        data_tests: [not_null]
+
+  - name: int_order_cancellations
+    description: >
+      Why an order was cancelled, one row per cancelled order (841 of 2 383; census as of 2026-09-12). The marketplace
+      has no such column: stats/orders carries no reason at all, and the business-orders substatus alone misleads —
+      USER_CHANGED_MIND sits on 356 cancellations whose parcel had already reached the pickup point and where nobody
+      pressed cancel. So the reason is a decision over three fields (order_substatus, real_delivery_date,
+      is_cancel_requested) plus the storage window; the order of the rules and why each stands where it does is in the
+      model's header. reason_rule says which rule fired, reason_is_inferred whether that rule was a statement or our
+      inference — 442 of the 841 rows are inferences (402 of the 415 refusals among the 693 fully unredeemed orders),
+      and a number built on them is a floor with a story, not a measurement.
+      Consumed by int_order_lines, which decides how a reason belonging to an ORDER may be applied to a line; the
+      planned rpt_order_economics can read it directly at its own grain. Not filtered on is_test_order (filter
+      downstream, as everywhere).
+    data_tests:
+      # a refusal at handover is impossible without the parcel getting there — every rule that produces it requires arrival
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "cancellation_reason <> 'refused_at_handover' or parcel_arrived"
+      # the window rules can only produce these two verdicts; anything else means the mapping and the flag drifted apart
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not reason_is_inferred or cancellation_reason in ('refused_at_handover', 'not_collected')"
+      # the default branch: an order whose parcel never arrived and about which nothing else is known. 0 rows today.
+      # A row here is not a bug, it is a case to look at before trusting the mix — hence warn.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "cancellation_reason <> 'unknown'"
+          config: {severity: warn}
+    columns:
+      - name: order_id
+        description: "Marketplace order id — the join key to int_order_lines and stg_ym__orders. unique here is load-bearing: int_order_lines joins this model BEFORE the fee-allocation window functions, so a duplicate would silently double the allocated commissions."
+        data_tests: [unique, not_null]
+      - name: cancellation_reason
+        description: >
+          Counts of all 841 cancelled orders; in brackets the subset that matters for losses — the 693 fully unredeemed
+          ones, with the commissions at stake.
+          refused_at_handover — the parcel reached the buyer or the pickup point and was not taken: the marketplace says
+          so outright (13) or the order ended inside the storage window without a cancellation request (410) → 423
+          (415 orders, 58 797 ₽);
+          not_collected — the marketplace states the parcel was not collected, by expiry or by the buyer saying they
+          have no time (136), or the order ended after the window (32) → 168 (164, 25 898 ₽);
+          cancelled_by_buyer — the buyer pressed cancel, wherever the parcel was → 168 (98, 16 271 ₽);
+          not_paid — the order died at checkout: unpaid, wrong payment method, a forgotten bonus → 66 (3, 681 ₽; almost
+          none reach a loss row because nothing was shipped);
+          delivery_failed — delivery or the warehouse broke it → 16 (13, 2 018 ₽);
+          unknown — no arrival recorded and nothing else known → 0, kept honest by the warn test above.
+          A reason here describes the ORDER; int_order_lines decides which lines it may be attached to.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['refused_at_handover', 'not_collected', 'cancelled_by_buyer', 'not_paid', 'delivery_failed',
+                         'unknown']
+      - name: reason_rule
+        description: >
+          Which rule decided the reason, in evaluation order: stated_not_collected (136), stated_failure (16),
+          payment_abandoned (66), buyer_request (168), stated_refusal (13), no_evidence (0), arrival_is_handover (0),
+          within_storage_window (410), after_storage_window (32). Kept as a column so one order can be audited without
+          re-reading the CASE, and so the reason and the inference flag cannot drift apart — both are read off this.
+          Only two substatuses reach the window rules today, USER_CHANGED_MIND (356) and FULL_NOT_RANSOM (86);
+          tests/assert_cancellation_substatuses_known.sql warns when a third one starts arriving there, because a value
+          the tree does not know does not become 'unknown' — it falls through into the window rules and becomes the
+          headline number.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['stated_not_collected', 'stated_failure', 'payment_abandoned', 'buyer_request',
+                         'stated_refusal', 'no_evidence', 'arrival_is_handover', 'within_storage_window',
+                         'after_storage_window']
+      - name: reason_is_inferred
+        description: "TRUE when the verdict came from the storage-window rules (or from courier arrival) rather than from the marketplace's own statement or the buyer's request: 442 of 841 cancellations, 402 of the 415 refusals among the 693 unredeemed orders. The marketplace records no visit to a pickup point, so this is where the reasoning stops being evidence."
+        data_tests: [not_null]
+      - name: is_cancel_requested
+        description: "Whether the BUYER pressed cancel (staging; NULL there is read as FALSE here — 'no request on record', never 'maybe'). Decides 168 of the 841 verdicts, so if the marketplace ever stops filling it, those orders move into the window rules: staging carries a not_null test at warn severity for exactly that reason."
+        data_tests: [not_null]
+      - name: parcel_arrived
+        description: >
+          Whether a delivery to the pickup point (or to the buyer, for a courier) was RECORDED — real_delivery_date is
+          not null. TRUE on 639 of the 693 fully unredeemed orders. Careful with the other 54: every one of them has
+          REJECTED units, i.e. a parcel did travel and came back, so FALSE means "no arrival on record", not "the parcel
+          never got there". All 54 are classified by an earlier rule (a request, a statement) and none becomes
+          'unknown', but the column must not be read as proof of the negative.
+        data_tests: [not_null]
+      - name: real_delivery_date
+        description: "Day the parcel arrived (stg_ym__business_orders). NOT the day of purchase — for self-pickup the buyer collects 0 to 8+ days later, so this must never become the sales date."
+      - name: cancelled_at
+        description: "Moment the order was cancelled (stg_ym__business_orders.order_updated_at, which equals orders_stats.status_updated_at to the second). The warehouse books the returned units 1 to 5 days later — that later date is what dates the loss in reporting."
+      - name: days_at_pickup
+        description: "Days from recorded arrival to cancellation; NULL when no arrival was recorded, 0 when the order ended the day the parcel arrived (167 of 639). Compared with storage_days_allowed it decides refused_at_handover against not_collected."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: storage_days_allowed
+        description: >
+          The window this row was judged against: var pickup_storage_days (7 — the marketplace's official period at a
+          branded outlet) for every channel except courier, where arrival already is handover and the window is NULL.
+          The honest cost of one window: a locker keeps a parcel 2 days and a post office 5, and nothing in the source
+          marks either. Sensitivity on the 693 unredeemed orders — 7 days gives 415 refusals against 164 not-collected,
+          14 days gives 446/133, and 2 days (the locker period, i.e. the worst case if a large share of these were
+          lockers) gives 291/288. So the direction of the answer survives the threshold, but the size of the refusal
+          bucket does not: quote it with the window.
+      - name: order_substatus
+        description: "The marketplace's own substatus, carried raw: the reason above is a reading of it, not a replacement, and a new value must be classified in this model's Jinja sets before it reaches the window rules."
+        data_tests: [not_null]
+      - name: delivery_type
+        description: "PICKUP | DELIVERY | POST. Decides whether the storage window applies: only a courier order (DELIVERY) skips it, because there arrival means the goods were in the buyer's hands. Every unredeemed order so far is PICKUP."
+        data_tests: [not_null]
+      - name: dispatch_type
+        description: "MARKET_BRANDED_OUTLET | UNKNOWN. Carried for the report page; NOT used to pick the window — it separates neither outlets from lockers nor pickup from courier (see stg_ym__business_orders)."
+      - name: is_test_order
+        description: "Marketplace test order. Filter downstream, as with every other model."
         data_tests: [not_null]
 
   - name: int_stock_daily

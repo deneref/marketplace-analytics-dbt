@@ -424,8 +424,10 @@ models:
       pickup point) and is_cancel_requested (the buyer pressed cancel) — plus the delivery channel, the shipping
       warehouse at order level and the payment method. Money, the fine-grained order status and the per-unit
       REJECTED / RETURNED events stay with orders_stats, whose figures reconcile with the realization report.
-      Nothing reads this model yet: the loss-reason tree that will consume it is the next change in int_order_lines,
-      and the storage windows that tree needs are its business logic, not this model's.
+      Read by int_order_cancellations, which turns these three columns plus the storage window into the reason an order
+      was cancelled, and by int_order_lines, which takes the order attributes (real_delivery_date, order_substatus) from
+      here directly — that model keeps only cancelled orders, and the arrival date of a DELIVERED order is what shows how
+      long a parcel waited at the counter.
       Loaded by a one-off backfill; there is no scheduled catch-up yet, so the 21 orders still in flight keep a stage
       substatus while orders_stats moves them on. Staleness is not guarded by source freshness (a manual backfill
       would warn forever and be ignored) but by tests/assert_business_orders_matches_orders_stats.sql, which names the
@@ -474,9 +476,9 @@ models:
           Processing stage while the order is live, cancellation REASON once it is cancelled — one column, two
           meanings, told apart by order_status_coarse. Filled on every row. Never read it as the buyer's reason on its
           own: USER_CHANGED_MIND ("cancelled for personal reasons") sits on 351 unredeemed orders whose parcel had
-          already reached the pickup point and where nobody pressed cancel. The reason is built in int_order_lines
-          from this column together with real_delivery_date and is_cancel_requested, and the mapping from value to
-          reason lives there — this list is flat on purpose, so the two do not drift apart. FULL_NOT_RANSOM is in the
+          already reached the pickup point and where nobody pressed cancel. The reason is built in
+          int_order_cancellations from this column together with real_delivery_date and is_cancel_requested, and the
+          mapping from value to reason lives there — this list is flat on purpose, so the two do not drift apart. FULL_NOT_RANSOM is in the
           API enum but absent from its documentation (literally "full non-purchase"); it is not a synonym of
           PICKUP_EXPIRED — the parcel had arrived in every case observed. The docs allow unlisted values, so the test
           warns rather than fails, but a new value must be classified in int_order_lines before it lands in the
@@ -536,8 +538,8 @@ models:
           and not a substitute for delivery_type: the cross-tab is 1 901 pickup + outlet, 423 courier + unknown, but
           also 35 pickups with UNKNOWN and 24 courier orders with MARKET_BRANDED_OUTLET. And it does not tell a
           staffed outlet (7 days of storage) from a locker (2 days) — the enum has no locker value at all, so the
-          locker branch of the loss-reason tree has no source in this data and int_order_lines must not pretend it
-          does; the window has to be keyed on delivery_type = 'PICKUP' and treat UNKNOWN as unknown.
+          locker branch of the loss-reason tree has no source in this data and int_order_cancellations does not
+          pretend otherwise: it keys the window on delivery_type instead and states what the single window costs.
         data_tests:
           - not_null:
               config: {severity: warn}
@@ -562,9 +564,10 @@ models:
         description: >
           The day the goods reached the PICKUP POINT (for self-pickup) or the buyer (for a courier) — the API's own
           definition, and the most useful column here: its presence proves the parcel travelled the whole way. Filled
-          on 2 183 of 2 383 orders and on 639 of the 693 fully unredeemed ones, so 92 % of unredeemed parcels did
-          arrive and only 54 were cancelled earlier. NULL means "never arrived" OR "not yet" — read it with
-          order_status_coarse, never alone.
+          on 2 183 of 2 383 orders and on 639 of the 693 fully unredeemed ones. Careful with the other 54: every one of
+          them has REJECTED units, so a parcel did travel and came back — NULL here means "no arrival on record", which
+          may be a parcel that turned back in transit OR a missing value, and it is never proof of the negative. Read it
+          with order_status_coarse, never alone.
           **It is not the day of purchase and must not become the sales date.** Checked on 1 070 delivered pickup
           orders: the buyer collects the parcel the same day in 37 % of cases, the next day in 25 %, and 3 % wait
           eight days or more. The receipt date the project already uses (status_updated_at of a delivered order) is

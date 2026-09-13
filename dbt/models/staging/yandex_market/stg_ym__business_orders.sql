@@ -1,7 +1,7 @@
 {{ config(materialized='view') }}
 
 -- Staging rule: rename, cast. No joins, no aggregation, no business logic — the tree that turns these columns into
--- "why was this parcel not bought" belongs to int_order_lines, and so do the storage windows it needs.
+-- "why was this parcel not bought" lives in int_order_cancellations, and so does the storage window it needs.
 -- Grain: order. One row per marketplace order, latest load wins.
 --
 -- Why a second order source exists at all: orders_stats carries neither a cancellation reason nor any delivery date,

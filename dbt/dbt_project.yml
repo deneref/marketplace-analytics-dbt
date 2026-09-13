@@ -14,6 +14,10 @@ vars:
   use_demo_seeds: false        # dbt build --vars '{"use_demo_seeds": true}' runs on synthetic seeds, no API needed
   base_month: "2025-01-01"     # index base for public rpt_* views
   fct_order_lines_lookback_days: 30   # incremental window: late fees and return events do not move status_updated_at
+  pickup_storage_days: 7              # days a parcel waits at a Market pickup point before storage expires (official: 7;
+                                      # lockers get 2, but nothing in the data marks a locker). int_order_cancellations
+                                      # uses it to tell "refused at the counter" from "never collected"; the answer is
+                                      # not sensitive to it — 7 vs 14 moves 31 of 693 unredeemed orders.
 
 models:
   marketplace_analytics:

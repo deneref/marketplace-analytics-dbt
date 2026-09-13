@@ -17,11 +17,18 @@ REJECTED covers cancellations, the data showed cancelled orders carry no events 
 
 | model | grain | job |
 |---|---|---|
-| `int_order_lines` | order × line (`order_line_key`) | the order line as an analytical entity: line + order attributes + what happened to the units (events) + the order's fees allocated to the line |
+| `int_order_lines` | order × line (`order_line_key`) | the order line as an analytical entity: line + order attributes + what happened to the units (events) + the order's fees allocated to the line + the reason the returned units came back |
+| `int_order_cancellations` | order (cancelled orders only) | why an order was cancelled: a decision tree over substatus, real delivery date, the buyer's cancellation request and the pickup-point storage window, with the rule that fired and whether it was an inference |
 | `int_stock_daily` | snapshot_date × sku × warehouse_id | stock types pivoted to columns; no calendar fill |
 
 Conditional, decided after the revenue reconciliation (see project README):
 `int_realization_lines` (realization report pivoted to order × sku) only if revenue is taken from the
 realization report rather than from orders_stats.
+
+Two models, not one, for the loss reason: the reason belongs to the ORDER (`int_order_cancellations`, where it can
+be tested at its own grain — one reason per order, an empty default branch, the window rules flagged as inferences),
+while the priority between it and the line-level evidence, and the rule that a reason is attached only to lines that
+actually lost units, belong to the line (`int_order_lines`). The order-grain model is also what the planned
+`rpt_order_economics` reads without going through the line fact.
 
 Rule of thumb: if `fct_sales_daily` can be built from `int_order_lines` with one `group by`, the model is right.
