@@ -126,7 +126,7 @@ models:
           part of it was handed back. Rejections only — a return would make this true for a fully received order and
           label a post-purchase return as a refusal at the counter. This is the only evidence in stats/orders that separates "did not collect the parcel" from
           "held the item and handed it back" — the marketplace reports both as CANCELLED_IN_DELIVERY and this report
-          carries no substatus. Used by rpt_sales_daily to split unredeemed. True on 54 lines of 47 orders today.
+          carries no substatus. Used by rpt_sales_daily to split unredeemed. True on 55 lines of 47 orders as of 2026-09-14.
           Not proof: a multi-parcel order could deliver one parcel and lose another in transit.
         data_tests: [not_null]
       - name: fee_share

@@ -1,6 +1,7 @@
 -- The delivered half of the reporting view must be the fact plus columns: same rows, same money, nothing lost
--- or invented by the join. The view's key is event_date + sku + outcome, so the fact side rebuilds it with the
--- literal 'delivered'. A full outer join on that key catches a row only in the fact (an inner join or a filter
+-- or invented by the join. The view's key is event_date + sku + outcome + loss_reason + kept_instead, so the fact side
+-- rebuilds it with the literal 'delivered' and two nulls — a delivered row has nothing to explain and nothing kept
+-- instead (generate_surrogate_key substitutes its own placeholder for a null, identically on both sides). A full outer join on that key catches a row only in the fact (an inner join or a filter
 -- crept in), a delivered row only in the view (the union invented one), and a row on both sides whose measures
 -- moved (someone recomputed something here instead of passing it through). Loss rows are out of scope here —
 -- assert_rpt_sales_daily_losses_match_lines.sql reconciles them to fct_order_lines.
@@ -22,7 +23,8 @@ fct as (
 
     -- the fact's own key (delivered_date + sku) is replaced by the view's (event_date + sku + outcome)
     select
-        {{ dbt_utils.generate_surrogate_key(['delivered_date', 'sku', "'delivered'"]) }} as sales_daily_key,
+        {{ dbt_utils.generate_surrogate_key(['delivered_date', 'sku', "'delivered'",
+                                             'cast(null as varchar)', 'cast(null as varchar)']) }} as sales_daily_key,
         * exclude (sales_daily_key)
     from {{ ref('fct_sales_daily') }}
 

@@ -3,51 +3,139 @@ version: 2
 models:
   - name: rpt_sales_daily
     description: >
-      The sales page of the dashboard, one wide row per day × sku × outcome: fct_sales_daily (outcome =
-      delivered) unioned with the fees of parcels that came back in full (outcome = unredeemed / returned,
-      aggregated from fct_order_lines to the day the units were received back), joined to the product attributes
-      the facts deliberately do not carry. dim_products holds one row per sku, so the join adds columns and never
-      rows. SUM(contribution_margin) over all rows is the margin AFTER unredeemed and returned parcels; filtered to
-      outcome = delivered it is the margin of what was sold. Partially unredeemed lines are inside the delivered
-      rows already (their fees are not scaled) and are not repeated. This layer exists because the Snowflake
-      connector for Looker Studio cannot push date filters down (the period control never narrows the query),
-      counts its 1M-row / 50MB quota per source, and blends poorly; so a dashboard page reads exactly one view.
-      Money is RUB; sales are recognised on the day the buyer received the goods and restated on returns, losses
-      on the day the parcel came back (later than sales — the last weeks of a period undercount losses more).
-      Measures pass through from the facts untouched, so the tests that guard them stay on the facts; what is
-      tested here is the join and the union — each half reconciles to its own fact in tests/. Ratios are not stored: margin %, fee share, average price and the estimated-cost share are divisions of these sums in BI.
-      Column names are ASCII (a connector requirement) and must stay identical to rpt_sales_daily_public, which
-      is the same view with money multiplied by a secret constant — the public report is a copy of this one with
-      the data source swapped, and Looker breaks every widget if the schemas differ.
+      The sales page of the dashboard, one wide row per day × sku × outcome × loss reason × what was kept instead:
+      fct_sales_daily (outcome = delivered) unioned with the units that came back and what they cost (outcome =
+      unredeemed / returned, each kind of loss aggregated to the day ITS OWN event reached the warehouse), joined to the
+      product attributes the facts deliberately do not carry. dim_products holds one row per sku, so the join adds columns and never rows.
+      SUM(contribution_margin) over all rows is the margin AFTER unredeemed and returned parcels; filtered to
+      outcome = delivered it is the margin of what was sold.
+      EVERY unit that came back is here, including the units of a line that kept some and lost others — the brand reads
+      refusals by sku and product type, so the units of a sku must all be present or its rate is wrong. Money follows a
+      different rule: fees are not scaled by delivery, so a line already counted as a sale pays its FULL fees there and
+      its loss row carries units only with zero money (one such line in the whole history as of 2026-09-14). The
+      condition is the exact complement of fct_sales_daily's filter, so no fee of a line the page shows is counted twice
+      or lost — assert_rpt_sales_daily_fees_counted_once.sql checks that from the line side. Lines that are neither a
+      sale nor a loss (cancelled before shipment, still in flight) are not shown at all: 160 lines / 161 units carrying
+      4 ₽ of fees as of 2026-09-14.
+      The reason itself is decided upstream (int_order_cancellations → int_order_lines → fct_order_lines) and passed
+      through untouched; the only thing derived here is WHICH item the buyer kept instead (kept_instead), which needs
+      dim_products — whether they kept one at all is upstream's call. units_lost_inferred is
+      the reason's honest companion — 402 of the 415 refusals among the 693 fully unredeemed orders rest on the
+      storage-window inference — and it is a measure, not a dimension, so the caveat survives every cut.
+      Read the reason breakdown at product_type / model_code: measured on the whole history (817 refused units, 44 skus)
+      those levels hold, while sku × reason gives 122 cells with a median of 3 units and exactly one unit in 30 of them —
+      sku is a drill with a minimum-n rule, not a chart.
+      This layer exists because the Snowflake connector for Looker Studio cannot push date filters down, counts its
+      1M-row / 50MB quota per source and blends poorly; so a dashboard page reads exactly one view. Money is RUB; sales
+      are recognised on the day the buyer received the goods, losses on the day the warehouse booked the units back —
+      a median of 5 days after the order was cancelled but a mean of 8.6 and a maximum of 84, so the last MONTH of any
+      period undercounts losses. A return does not post a reversal on its own day: it drops units_delivered on the
+      original line, so the sale leaves the day it was received and closed months move.
+      None of the reconciliation tests below has a scheduled run yet (CI is dbt parse plus a build on demo seeds), so
+      they guard this view when dbt test is run by hand. Ratios are not stored: margin %, fee
+      share, average price and the unredeemed rate are divisions of these sums in BI. Column names are ASCII (a
+      connector requirement) and must stay identical to rpt_sales_daily_public.
     data_tests:
       # the arithmetic the dashboard divides: holds on both kinds of rows
       - dbt_utils.expression_is_true:
           arguments:
             expression: "contribution_margin = revenue - fee_total - cogs"
-      # a loss row is fees only: nothing sold, nothing costed, margin is the fees with the sign flipped
+      # a delivered row carries no lost units at all
       - dbt_utils.expression_is_true:
           arguments:
-            expression: "outcome = 'delivered' or (units_delivered = 0 and units_lost > 0 and revenue = 0 and cogs = 0 and contribution_margin = -fee_total)"
-      # a delivered row carries no lost units — partial parcels stay inside the delivered row with their full fees
+            expression: "outcome <> 'delivered' or (units_lost = 0 and units_lost_defect = 0 and units_lost_inferred = 0 and units_delivered > 0)"
+      # a loss row sold nothing and costed nothing; its margin is its fees with the sign flipped — including the rows
+      # whose fees are zero because the line kept part of its units and pays them in its delivered row
       - dbt_utils.expression_is_true:
           arguments:
-            expression: "outcome <> 'delivered' or (units_lost = 0 and units_delivered > 0)"
+            expression: "outcome = 'delivered' or (units_delivered = 0 and revenue = 0 and cogs = 0 and units_lost > 0 and contribution_margin = -fee_total)"
+      # the two subsets of lost units are subsets
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "units_lost_defect <= units_lost and units_lost_inferred <= units_lost"
+      # a reason exists exactly on the unredeemed rows: delivered rows have nothing to explain, returned rows have their
+      # reason in the returns API, which is not ingested
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(loss_reason is not null) = (outcome = 'unredeemed')"
+      # what the buyer kept instead is evidence about a refusal at handover and about nothing else
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "kept_instead is null or loss_reason = 'refused_at_handover'"
     columns:
       - name: sales_daily_key
-        description: "Surrogate key of the grain: event_date + sku + outcome. unique here is the only guard against the dim join fanning out — the reconciliation tests cannot see a fan-out."
+        description: "Surrogate key of the grain: event_date + sku + outcome + loss_reason + kept_instead. unique here is the only guard against the dim join fanning out — the reconciliation tests cannot see a fan-out."
         data_tests: [unique, not_null]
       - name: event_date
-        description: "Delivered rows: day the buyer received the goods (the sales date). Loss rows: day the units were received back by the warehouse (rejected_date / returned_date), falling back to the order's status change. The dashboard's time axis — check it is the date range dimension on every chart in Looker: launch_date is the other date field and would otherwise be picked."
+        description: >
+          Delivered rows: the day the buyer received the goods (the sales date). Loss rows: the day the warehouse booked
+          the units back — rejected_date for refused units, returned_date for returned ones, each row dated by its own
+          event. This is NOT the day the buyer refused: that is the order's cancellation moment, a median of 5 days
+          earlier for refusals (mean 8.6, 90th percentile 12, maximum 84; n = 764 as of 2026-09-14) and a median of 9.5
+          for returns. A chart of refusals BY THE DAY THEY HAPPENED belongs on the order-economics page, not here.
+          Where the event carries no date of its own (62 of 898 units), the fallback is the order's status change, which
+          is a different basis rather than an approximation of the same one — those rows sit about a working week
+          earlier than comparable ones.
+          The dashboard's time axis: check it is the date range dimension on every chart in Looker, because launch_date
+          is the other date field and would otherwise be picked.
         data_tests: [not_null]
       - name: sku
         description: "Seller's SKU (offerId = shopSku)."
       - name: outcome
-        description: "delivered — a sales row from fct_sales_daily; unredeemed / returned — a loss row: the parcel came back in full, revenue 0, cogs 0, fee_total > 0."
+        description: "delivered — a sales row from fct_sales_daily; unredeemed — units refused before receipt; returned — units returned after receipt. The last two are loss rows: revenue 0, cogs 0, margin = −fee_total. Total losses = outcome <> 'delivered'."
         data_tests:
           - not_null
           - accepted_values:
               arguments:
                 values: ['delivered', 'unredeemed', 'returned']
+      - name: loss_reason
+        description: >
+          Why the refused units came back, decided upstream and passed through unchanged: refused_at_handover — the
+          parcel reached the pickup point or the buyer and was not taken; not_collected — storage expired or the buyer
+          said they would not come; cancelled_by_buyer — the buyer pressed cancel, wherever the parcel was; not_paid —
+          the order died at checkout; delivery_failed — delivery or the warehouse broke it; unknown — no arrival on
+          record and nothing else known; not_in_source — the order has not been pulled from the business-orders source
+          yet (a pipeline state, not a reason; tests/assert_loss_reason_coverage.sql watches its share). NULL on
+          delivered rows and on returned rows. Definitions and how each is decided: int_order_cancellations.
+          Only refused_at_handover is about the ITEM. Of 817 refused units as of 2026-09-14: refused_at_handover 510,
+          not_collected 181, cancelled_by_buyer 110, delivery_failed 13, not_paid 3, unknown 0, not_in_source 0 — so
+          307 units belong to parcels nobody opened, where this sku was a passenger. A "refusal rate" over all lost
+          units of a sku ranks parcels, not cards: filter to refused_at_handover first, and quote units_lost_inferred
+          next to it (442 of those 510 rest on the storage-window inference). Read it at product_type / model_code,
+          where the cells hold.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['refused_at_handover', 'not_collected', 'cancelled_by_buyer', 'not_paid', 'delivery_failed',
+                         'unknown', 'not_in_source']
+      - name: kept_instead
+        description: >
+          For a refusal in an order that kept something, what the buyer kept instead of this item: other_size — the same
+          model in another size, so the size grid failed; other_colour — the same model and size in another colour, so
+          the photo or the colour name failed, not the cut; same_sku — another unit of the very same sku; other_item —
+          something else from the order. NULL everywhere else, including every row whose reason came from the order
+          rather than from that evidence. WHETHER the order kept anything is int_order_lines' is_order_partly_kept, the
+          same flag that makes the reason refused_at_handover; only WHICH item is derived here, because that needs
+          dim_products. assert_rpt_sales_daily_kept_instead_covered.sql holds the two together.
+          55 lines carry a label as of 2026-09-14 — other_item 22, other_colour 21, other_size 11, same_sku 1 — and no
+          line matches two labels, so the priority between them is stated in the code, not exercised by the data.
+          This is a list to read, not a chart to rank: by model × label it is 24 cells with a median of ONE unit and a
+          maximum of 16, so the project's n ≥ 5 rule rules out almost every cell. There is no drill from this page —
+          it carries no order_id — so a cell worth understanding is looked up in fct_order_lines.
+          What each label does and does not say:
+          other_size and other_colour are the same behaviour (the buyer ordered two variants of one model and kept one),
+          and which one it gets is decided by the product type rather than by the buyer: caps and scarves are sizeless,
+          so other_size is structurally impossible for them and 19 of the 21 other_colour lines are caps. Do not compare
+          the labels across product types. other_size is a size-bracketing signal, not a verdict on the grid: 11 lines
+          over 20 months, 7 of them kept the LARGER size and 4 the smaller, and one model (H-005) goes both ways; the
+          direction is not carried here. same_sku is self-evidence — the line kept part of its own units, so it is
+          guaranteed for every partially delivered line and says nothing about another item. other_item is the
+          remainder ("kept something, and it was not this model"), and it also absorbs the cases where the comparison
+          could not be made at all — a kept sku with no dim_products row or an unparsed code (none today).
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['other_size', 'other_colour', 'same_sku', 'other_item']
 
       - name: product_name
         description: "Card name from the last catalogue snapshot the sku appeared in. Label, not a grouping key — use model_name."
@@ -88,7 +176,9 @@ models:
           a day, so day-to-day movement is largely noise. Never negative in the data checked (1 469 sold lines,
           none before their launch_date); null when the seed has no launch_date for the model. NOTE: the seed's
           launch_date is a proxy (the model's first order date) measured against a receipt date, so day 0 never
-          occurs — observed range is 1…577 — and cohorts shift if a proxy is replaced by a real launch date.
+          occurs — observed range is 1…577 — and cohorts shift if a proxy is replaced by a real launch date. That range
+          was measured on sold lines only; loss rows are dated by the day the parcel came back, so on them this is
+          "days from launch to the return" and a drop cohort must be filtered to outcome = 'delivered'.
         data_tests:
           - dbt_utils.accepted_range:
               arguments:
@@ -106,24 +196,143 @@ models:
       - name: units_delivered
         description: "Units received and kept, after returns. 0 on loss rows."
       - name: units_lost
-        description: "Units that came back — unredeemed or returned in full. 0 on delivered rows. Unredeemed share of a sku in BI = SUM(units_lost) / (SUM(units_delivered) + SUM(units_lost))."
+        description: >
+          Units that came back, refused or returned — every one of them, including the units of a line that kept the
+          rest (those rows carry units without money; see the model description). 0 on delivered rows.
+          The denominator of any rate built on it is SUM(units_delivered) + SUM(units_lost): units_delivered is already
+          net of returns, so the two never overlap. They do NOT add up to everything ordered — lines cancelled before
+          shipment and lines still in flight are not on this page (2 369 units against 2 530 ordered as of 2026-09-14).
+          The unredeemed rate of a sku is SUM(units_lost) FILTERED to outcome = 'unredeemed' over that full denominator:
+          returned units belong in the denominator (they were ordered) but not in the numerator (they were bought and
+          then sent back — a different question), and for a statement about the PRODUCT filter the numerator further to
+          loss_reason = 'refused_at_handover' (see loss_reason).
+          Two ways this goes wrong in BI, both by making the denominator disappear. Filtering the report to
+          outcome = 'unredeemed' drops the delivered units and every rate becomes 1. Grouping BY loss_reason or BY
+          kept_instead does the same silently: delivered rows carry null in both, so they collapse into a "(null)" row
+          and every named reason shows 100 %. Build the rate as two explicit measures — numerator with a CASE,
+          denominator over all rows — and the grouping stops mattering. With the project's n ≥ 5 rule.
+        data_tests: [not_null]
+      - name: units_lost_defect
+        description: >
+          Of units_lost, the units the marketplace warehouse booked as DEFECT — they cannot be sold again. A lower
+          bound: stockType is filled only after the warehouse processes the parcel, so units still travelling count as
+          neither FIT nor DEFECT — 62 of the 898 units that came back have no stockType at all as of 2026-09-14 (51 of
+          the 817 refused, 11 of the 81 returned), and this column covers both kinds. Two uses: the
+          cost of these units is written off nowhere in the model yet, so this is the size of that hole (45 refused +
+          27 returned units); and on a refused_at_handover row it is the warning that the refusal may be damage in
+          transit rather than a judgement on the item. 0 on delivered rows.
+        data_tests: [not_null]
+      - name: units_lost_inferred
+        description: >
+          Of units_lost, the units whose reason rests on the storage-window inference rather than on a statement by the
+          marketplace: the parcel reached the pickup point, nobody asked to cancel, and the order ended inside the
+          storage period — which is evidence, not a record of a visit. In units, the basis of this column: 475 of the
+          817 refused units as of 2026-09-14, and inside the refusals proper 442 of 510 (87 %) — only 55 units are
+          proved by the order itself and 13 were called a refusal by the marketplace. A measure, not a dimension, so
+          "of which inferred" survives any cut; on a small cell it is the difference between a signal and three cases
+          nobody described. 0 on delivered and on returned rows, so the share must be taken over the unredeemed half:
+          SUM(units_lost_inferred) / SUM(CASE WHEN outcome = 'unredeemed' THEN units_lost END).
+          It counts only units whose reason IS inferred. Where the flag is null upstream — the reason is 'unknown' or
+          'not_in_source', i.e. there is no reason to rest on anything — the units are counted as not inferred, because
+          the alternative (counting them here) would claim the storage window decided them. Those rows are not hidden:
+          they carry that reason in loss_reason, so "reason we cannot defend" on this page is
+          units_lost_inferred + units_lost of the unknown / not_in_source reasons. Both were 0 as of 2026-09-14, when
+          the business-orders backfill covered all 2 383 orders; not_in_source is a pipeline state and grows whenever
+          that source falls behind the order source, so check it before quoting any reason mix.
         data_tests: [not_null]
       - name: sku_orders_count
-        description: "Orders that contained this sku on this day. NOT additive across skus: an order holding a hoodie and a cap counts once in each sku's row, so summing this column overstates orders by the share of multi-sku orders. Real orders per day are count(distinct order_id) over fct_order_lines, which this page does not read."
+        description: >
+          Orders that contained this sku in this row. NOT additive across skus: an order holding a hoodie and a cap
+          counts once in each sku's row, so summing this column overstates orders by the share of multi-sku orders. Nor
+          across the rest of the grain: an order that kept one item and refused another is counted in a delivered row
+          and in a loss row, the two rows can fall on different days (receipt against the parcel's return), and an order
+          with two refused lines of the same sku under different reasons or different kept_instead labels is counted in
+          each. Real orders per day are count(distinct order_id) over fct_order_lines, which this page does not read.
       - name: lines_count
-        description: "Order lines aggregated into this row."
+        description: >
+          Order lines aggregated into this row. Same two caveats as sku_orders_count, one of them sharper: a line that
+          kept some units and lost others is counted in both its rows, and a line with both refused and returned units
+          would be counted in both loss rows (no such line exists as of 2026-09-14). Use it to read how thin a cell is,
+          not as a count of lines.
         data_tests: [not_null]
 
       - name: revenue
         description: "Revenue recognised on this day, RUB: the delivered share of the price before marketplace-funded discounts. 0 on loss rows."
       - name: fee_total
-        description: "All marketplace fees allocated to the sold lines, RUB. Excludes bid_fee, which is a declared bid and not a charge."
+        description: "All marketplace fees allocated to the lines this page shows, RUB — on a loss row, the fees of a line that sold nothing, which is the cost of an unredeemed parcel and the point of the loss half. SUM over all rows is therefore the cost of sales AND of losses; filter to outcome = 'delivered' for the cost of sales alone. Excludes bid_fee, which is a declared bid and not a charge."
       - name: fee_boost
-        description: "The promotion (AUCTION_PROMOTION) part of fee_total, RUB — the one cost the brand changes day to day. Inside fee_total, never on top of it; promotion share = fee_boost / revenue in BI."
+        description: "The promotion (AUCTION_PROMOTION) part of fee_total, RUB — the one cost the brand changes day to day, though it is dated here by receipt and not by the day of the auction. Inside fee_total, never on top of it. Promotion share = fee_boost / revenue FILTERED to outcome = 'delivered': loss rows carry promotion with revenue 0 (the marketplace charges it whether or not the parcel was collected), so the unfiltered ratio inflates the share and divides by zero in any cut of the loss half."
       - name: cogs
         description: "Cost of the delivered units at the unit cost valid on delivered_date, RUB."
       - name: cogs_estimated
-        description: "The part of cogs resting on a planned rather than actual cost. Share of the margin that is an estimate = cogs_estimated / cogs in BI."
+        description: "The part of cogs resting on a planned rather than actual cost. Share of the COST that is an estimate = cogs_estimated / cogs in BI (0/0 on loss rows, so it survives any cut)."
       - name: contribution_margin
         description: "revenue − fee_total − cogs, RUB. Summed over all rows: contribution margin after unredeemed and returned parcels (their rows carry −fee_total). Filtered to outcome = delivered: the margin of what was sold. Still not a P&L — fixed costs and the joint-promotion write-offs (netting) are not here."
 
+
+unit_tests:
+  - name: rpt_sales_daily_labels_what_was_kept_instead
+    description: >
+      The kept_instead classification and the outcome split on a fixture — the one part of this view that no
+      reconciliation can check, because a reconciliation must not restate a classification (see the layer README).
+      Swap two branches of the CASE, or one `is distinct from`, and every other test stays green while the dashboard
+      turns "the photo failed" into "the size grid failed"; this is what catches that.
+      One order per branch: the same model in another size, the same model and size in another colour, another unit of
+      the line's OWN units (a partially delivered line — it is its own evidence), another model, an order that kept
+      nothing at all (no label), a kept sku whose code does not parse (no model to compare → the remainder branch), and
+      an order that offers BOTH another size and another colour, which pins the priority the data has never exercised.
+      Plus the two things the history has never contained: a line with refused AND returned units, which must become two
+      rows dated by their own events with the money on the refusal, and a refusal with no event date, which must fall
+      back to the order's status change.
+      fct_sales_daily is empty on purpose: the delivered half is reconciled to it row by row by
+      assert_rpt_sales_daily_matches_fact.sql, and mixing it in here would only make the expectation longer.
+    model: rpt_sales_daily
+    given:
+      - input: ref('fct_sales_daily')
+        rows: []
+      - input: ref('dim_products')
+        rows:
+          - {sku: 'H-L-B-001',  model_code: 'H-001',   size: 'L'}
+          - {sku: 'H-M-B-001',  model_code: 'H-001',   size: 'M'}
+          - {sku: 'H-L-GR-001', model_code: 'H-001',   size: 'L'}
+          - {sku: 'CAP-BG-006', model_code: 'CAP-006', size: 'ONE'}
+          - {sku: 'CAP-BUR-006', model_code: 'CAP-006', size: 'ONE'}
+          - {sku: 'SW-M-B-015', model_code: null,      size: null}      # code does not fit its type: nothing to compare
+      - input: ref('fct_order_lines')
+        rows:
+          # kept another size of the same model
+          - {order_line_key: 'k1', order_id: 'o1', sku: 'H-L-B-001',  loss_reason: 'refused_at_handover', loss_reason_is_inferred: false, is_order_partly_kept: true,  units_rejected: 1, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 0, rejected_date: 2026-01-01, returned_date: null, delivered_date: 2026-01-01, fee_total: 100, fee_boost: 10, is_test_order: false}
+          - {order_line_key: 'k2', order_id: 'o1', sku: 'H-M-B-001',  loss_reason: null, loss_reason_is_inferred: null, is_order_partly_kept: true,  units_rejected: 0, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 1, rejected_date: null, returned_date: null, delivered_date: 2026-01-01, fee_total: 100, fee_boost: 10, is_test_order: false}
+          # kept the same model and size in another colour (only possible for a sized type; caps and scarves are ONE)
+          - {order_line_key: 'k3', order_id: 'o2', sku: 'CAP-BG-006', loss_reason: 'refused_at_handover', loss_reason_is_inferred: false, is_order_partly_kept: true,  units_rejected: 1, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 0, rejected_date: 2026-01-02, returned_date: null, delivered_date: 2026-01-02, fee_total: 100, fee_boost: 10, is_test_order: false}
+          - {order_line_key: 'k4', order_id: 'o2', sku: 'CAP-BUR-006', loss_reason: null, loss_reason_is_inferred: null, is_order_partly_kept: true, units_rejected: 0, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 1, rejected_date: null, returned_date: null, delivered_date: 2026-01-02, fee_total: 100, fee_boost: 10, is_test_order: false}
+          # kept part of its OWN units: the line is its own evidence, and its fees stay in the delivered half
+          - {order_line_key: 'k5', order_id: 'o3', sku: 'H-L-B-001',  loss_reason: 'refused_at_handover', loss_reason_is_inferred: false, is_order_partly_kept: true,  units_rejected: 1, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 1, rejected_date: 2026-01-03, returned_date: null, delivered_date: 2026-01-03, fee_total: 100, fee_boost: 10, is_test_order: false}
+          # kept another model
+          - {order_line_key: 'k6', order_id: 'o4', sku: 'H-L-B-001',  loss_reason: 'refused_at_handover', loss_reason_is_inferred: false, is_order_partly_kept: true,  units_rejected: 1, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 0, rejected_date: 2026-01-04, returned_date: null, delivered_date: 2026-01-04, fee_total: 100, fee_boost: 10, is_test_order: false}
+          - {order_line_key: 'k7', order_id: 'o4', sku: 'CAP-BG-006', loss_reason: null, loss_reason_is_inferred: null, is_order_partly_kept: true,  units_rejected: 0, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 1, rejected_date: null, returned_date: null, delivered_date: 2026-01-04, fee_total: 100, fee_boost: 10, is_test_order: false}
+          # the order kept nothing: no label, and the fees belong to the loss row
+          - {order_line_key: 'k8', order_id: 'o5', sku: 'H-L-B-001',  loss_reason: 'not_collected', loss_reason_is_inferred: true, is_order_partly_kept: false, units_rejected: 1, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 0, rejected_date: 2026-01-05, returned_date: null, delivered_date: null, fee_total: 100, fee_boost: 10, is_test_order: false}
+          # kept a sku with no model to compare → the remainder, not a null
+          - {order_line_key: 'k9', order_id: 'o6', sku: 'H-L-B-001',  loss_reason: 'refused_at_handover', loss_reason_is_inferred: false, is_order_partly_kept: true,  units_rejected: 1, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 0, rejected_date: 2026-01-06, returned_date: null, delivered_date: 2026-01-06, fee_total: 100, fee_boost: 10, is_test_order: false}
+          - {order_line_key: 'k10', order_id: 'o6', sku: 'SW-M-B-015', loss_reason: null, loss_reason_is_inferred: null, is_order_partly_kept: true, units_rejected: 0, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 1, rejected_date: null, returned_date: null, delivered_date: 2026-01-06, fee_total: 100, fee_boost: 10, is_test_order: false}
+          # both another size and another colour in one order: size wins
+          - {order_line_key: 'k11', order_id: 'o7', sku: 'H-L-B-001', loss_reason: 'refused_at_handover', loss_reason_is_inferred: false, is_order_partly_kept: true,  units_rejected: 1, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 0, rejected_date: 2026-01-07, returned_date: null, delivered_date: 2026-01-07, fee_total: 100, fee_boost: 10, is_test_order: false}
+          - {order_line_key: 'k12', order_id: 'o7', sku: 'H-M-B-001', loss_reason: null, loss_reason_is_inferred: null, is_order_partly_kept: true,  units_rejected: 0, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 1, rejected_date: null, returned_date: null, delivered_date: 2026-01-07, fee_total: 100, fee_boost: 10, is_test_order: false}
+          - {order_line_key: 'k13', order_id: 'o7', sku: 'H-L-GR-001', loss_reason: null, loss_reason_is_inferred: null, is_order_partly_kept: true, units_rejected: 0, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 1, rejected_date: null, returned_date: null, delivered_date: 2026-01-07, fee_total: 100, fee_boost: 10, is_test_order: false}
+          # a refusal the marketplace dated nowhere: fall back to the order's status change (Moscow wall clock)
+          - {order_line_key: 'k14', order_id: 'o8', sku: 'H-L-B-001', loss_reason: 'not_collected', loss_reason_is_inferred: true, is_order_partly_kept: false, units_rejected: 1, units_returned: 0, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 0, rejected_date: null, returned_date: null, delivered_date: null, status_updated_at: '2026-01-08 10:00:00+03:00', fee_total: 100, fee_boost: 10, is_test_order: false}
+          # refused AND returned units on one line: two rows, each on its own date, money on the refusal
+          - {order_line_key: 'k15', order_id: 'o9', sku: 'H-L-B-001', loss_reason: 'not_collected', loss_reason_is_inferred: true, is_order_partly_kept: false, units_rejected: 1, units_returned: 1, units_rejected_defect: 0, units_returned_defect: 0, units_delivered: 0, rejected_date: 2026-01-11, returned_date: 2026-01-20, delivered_date: null, fee_total: 100, fee_boost: 10, is_test_order: false}
+    expect:
+      rows:
+        - {event_date: 2026-01-01, sku: 'H-L-B-001',  outcome: 'unredeemed', loss_reason: 'refused_at_handover', kept_instead: 'other_size',   units_lost: 1, fee_total: 100}
+        - {event_date: 2026-01-02, sku: 'CAP-BG-006', outcome: 'unredeemed', loss_reason: 'refused_at_handover', kept_instead: 'other_colour', units_lost: 1, fee_total: 100}
+        - {event_date: 2026-01-03, sku: 'H-L-B-001',  outcome: 'unredeemed', loss_reason: 'refused_at_handover', kept_instead: 'same_sku',     units_lost: 1, fee_total: 0}
+        - {event_date: 2026-01-04, sku: 'H-L-B-001',  outcome: 'unredeemed', loss_reason: 'refused_at_handover', kept_instead: 'other_item',   units_lost: 1, fee_total: 100}
+        - {event_date: 2026-01-05, sku: 'H-L-B-001',  outcome: 'unredeemed', loss_reason: 'not_collected',       kept_instead: null,           units_lost: 1, fee_total: 100}
+        - {event_date: 2026-01-06, sku: 'H-L-B-001',  outcome: 'unredeemed', loss_reason: 'refused_at_handover', kept_instead: 'other_item',   units_lost: 1, fee_total: 100}
+        - {event_date: 2026-01-07, sku: 'H-L-B-001',  outcome: 'unredeemed', loss_reason: 'refused_at_handover', kept_instead: 'other_size',   units_lost: 1, fee_total: 100}
+        - {event_date: 2026-01-08, sku: 'H-L-B-001',  outcome: 'unredeemed', loss_reason: 'not_collected',       kept_instead: null,           units_lost: 1, fee_total: 100}
+        - {event_date: 2026-01-11, sku: 'H-L-B-001',  outcome: 'unredeemed', loss_reason: 'not_collected',       kept_instead: null,           units_lost: 1, fee_total: 100}
+        - {event_date: 2026-01-20, sku: 'H-L-B-001',  outcome: 'returned',   loss_reason: null,                  kept_instead: null,           units_lost: 1, fee_total: 0}

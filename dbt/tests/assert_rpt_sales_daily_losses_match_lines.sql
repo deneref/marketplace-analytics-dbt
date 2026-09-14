@@ -1,57 +1,87 @@
--- The loss half of rpt_sales_daily (outcome = unredeemed / returned) must be exactly the fully-returned lines of
--- fct_order_lines, aggregated: same units that came back, same fees, same margin — grouped by the same day and
--- sku, under the same filter. The filter is repeated here on purpose: it is the definition of a loss row, and a
--- guard that the view did not quietly widen it (say, to partially delivered lines, which already sit inside
--- the delivered rows with their full fees and would then be counted twice).
--- Failing rows name the day, sku and outcome; a row on one side only means the date basis diverged.
+-- The loss half of rpt_sales_daily must hold exactly the lost units of fct_order_lines: the same units, on the same day
+-- and sku, under the same filter. The filter and the two date bases are repeated here on purpose — they are the
+-- DEFINITION of a loss row, and a guard that the view did not quietly widen, narrow or re-date it.
+--
+-- Folded to day × sku, deliberately: the view splits those units further by outcome, by loss_reason and by what the
+-- buyer kept instead, and a split is only allowed to REDISTRIBUTE units within a day and sku. Folding proves exactly
+-- that — if the classification lost a line, duplicated one, or moved units across dates, the totals stop matching —
+-- without re-implementing the classification in its own test, which would prove nothing.
+--
+-- Units only, and both kinds of them (all lost units, and the defective subset). Money is NOT compared here: the rule
+-- that decides which half a line's fees belong to cannot be restated in a test without copying it, and a copied rule
+-- passes its own bugs. assert_rpt_sales_daily_fees_counted_once.sql checks the money from the other side instead —
+-- every fee charged on a line the page shows appears in the page exactly once.
+--
+-- Every refused or returned unit is in scope, including the units of a line that kept the rest: miss those and a sku's
+-- unredeemed rate is understated, which is the number the brand reads by product type.
+-- Failing rows name the day and the sku; a row on one side only means the date basis diverged.
 
 {{ config(severity='error') }}
 
 with rpt as (
 
-    select event_date, sku, outcome, units_lost, fee_total, fee_boost, contribution_margin
+    select
+        event_date,
+        sku,
+        sum(units_lost)                                     as units_lost,
+        sum(units_lost_defect)                              as units_lost_defect
     from {{ ref('rpt_sales_daily') }}
-    where outcome in ('unredeemed', 'returned')
+    where outcome <> 'delivered'
+    group by 1, 2
 
 ),
 
 lines as (
 
+    -- the same two branches as the view, each dated by its own event: a line with both kinds of loss (none in the
+    -- history as of 2026-09-14) contributes to two dates, and dating both from the refusal is the mistake this catches
     select
-        coalesce(
-            iff(line_status = 'returned', returned_date, rejected_date),
-            {{ moscow_date('status_updated_at') }}
-        )                                       as event_date,
+        coalesce(rejected_date, {{ moscow_date('status_updated_at') }})  as event_date,
         sku,
-        line_status                             as outcome,
-        sum(units_rejected + units_returned)    as units_lost,
-        sum(fee_total)                          as fee_total,
-        sum(fee_boost)                          as fee_boost,
-        sum(contribution_margin)                as contribution_margin
+        units_rejected                                      as units_lost,
+        units_rejected_defect                               as units_lost_defect
     from {{ ref('fct_order_lines') }}
-    where line_status in ('unredeemed', 'returned')
+    where units_rejected > 0
       and not coalesce(is_test_order, false)
-    group by 1, 2, 3
+
+    union all
+
+    select
+        coalesce(returned_date, {{ moscow_date('status_updated_at') }})  as event_date,
+        sku,
+        units_returned                                      as units_lost,
+        units_returned_defect                               as units_lost_defect
+    from {{ ref('fct_order_lines') }}
+    where units_returned > 0
+      and not coalesce(is_test_order, false)
+
+),
+
+lines_daily as (
+
+    select
+        event_date,
+        sku,
+        sum(units_lost)                                     as units_lost,
+        sum(units_lost_defect)                              as units_lost_defect
+    from lines
+    group by 1, 2
 
 ),
 
 compared as (
 
     select
-        coalesce(r.event_date, l.event_date)     as event_date,
-        coalesce(r.sku, l.sku)                   as sku,
-        coalesce(r.outcome, l.outcome)           as outcome,
-        r.sku is null                            as missing_in_rpt,
-        l.sku is null                            as extra_in_rpt,
-        r.units_lost          is distinct from l.units_lost          as d_units_lost,
-        r.fee_total           is distinct from l.fee_total           as d_fee_total,
-        r.fee_boost           is distinct from l.fee_boost           as d_fee_boost,
-        r.contribution_margin is distinct from l.contribution_margin as d_margin
+        coalesce(r.event_date, l.event_date)                        as event_date,
+        coalesce(r.sku, l.sku)                                      as sku,
+        r.sku is null                                               as missing_in_rpt,
+        l.sku is null                                               as extra_in_rpt,
+        r.units_lost        is distinct from l.units_lost            as d_units_lost,
+        r.units_lost_defect is distinct from l.units_lost_defect     as d_units_defect
     from rpt as r
-    full outer join lines as l
+    full outer join lines_daily as l
         on  l.event_date is not distinct from r.event_date
         and l.sku = r.sku
-        and l.outcome = r.outcome
 
 )
 
@@ -60,6 +90,4 @@ from compared
 where missing_in_rpt
    or extra_in_rpt
    or d_units_lost
-   or d_fee_total
-   or d_fee_boost
-   or d_margin
+   or d_units_defect

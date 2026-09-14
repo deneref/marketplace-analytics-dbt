@@ -21,7 +21,19 @@ Rules for every `rpt_*`:
   and nothing invented (`tests/assert_rpt_sales_daily_matches_fact.sql` is the pattern). The one allowed
   extension is a `union all` of two facts that share the columns, each half reconciled to its own fact by its own
   test and told apart by an explicit column — `rpt_sales_daily` does this with `outcome`
-  (`assert_rpt_sales_daily_losses_match_lines.sql` is the second half);
+  (`assert_rpt_sales_daily_losses_match_lines.sql` is the second half). A `union all` may also SPLIT a fact row
+  when the outcome is a property of the unit rather than of the row, and then the grain carries the columns that
+  tell the parts apart (`rpt_sales_daily`: `outcome`, `loss_reason`, `kept_instead`);
+- reporting does not compute business logic — the classification arrives ready from the facts. The single exception
+  in the project is `rpt_sales_daily.kept_instead`, and it is allowed only because the comparison needs
+  `dim_products`, which the facts do not carry by the «facts hold keys only» rule. Such an exception owes a test on
+  the seam to the layer that decided the rest (`assert_rpt_sales_daily_kept_instead_covered.sql`);
+- a reconciliation may repeat a FILTER or a date basis — that is the definition of the half it checks, and a guard
+  that the view did not quietly re-draw it — but never a CLASSIFICATION: a copied rule passes its own bugs. So the
+  money rule of `rpt_sales_daily` (which half pays a line's fees) is checked from the line side instead
+  (`assert_rpt_sales_daily_fees_counted_once.sql`: every fee on a line the page shows appears exactly once), and a
+  seam where the view derives what a fact decided is checked as a seam, against the fact's own flag
+  (`assert_rpt_sales_daily_kept_instead_covered.sql`);
 - views, not tables: the sources are small and every dashboard query scans the whole set anyway.
 
 ## Public and private
@@ -57,7 +69,7 @@ reason `current_basic_price` is in neither — a real price standing next to mas
 
 | view | page | source | state |
 |---|---|---|---|
-| `rpt_sales_daily` | Pulse · SKU analytics · Drops — sales, and the fees of unredeemed / returned parcels (`outcome`), so the page's margin is after losses | `fct_sales_daily` ∪ `fct_order_lines` (loss lines) + `dim_products` | written, being wired into Looker |
+| `rpt_sales_daily` | Pulse · SKU analytics · Drops — sales, and every unit that came back with what it cost (`outcome` = delivered / unredeemed / returned, plus `loss_reason` and `kept_instead`), so the page's margin is after losses and refusals can be read by product type | `fct_sales_daily` ∪ `fct_order_lines` (loss lines) + `dim_products` | written, being wired into Looker |
 | `rpt_sales_daily_public` | the same, published | `rpt_sales_daily` | next |
 | `rpt_order_economics` | Order economics: unredeemed parcels, returns, fee mix | `fct_order_lines` + `dim_products` | planned — needs a date basis for lines that were never delivered, and `fee_type` unpivoted |
 | `rpt_inventory_turnover` | Separate report «Stock»: turnover by cluster | `fct_inventory_turnover_monthly` + `dim_products` | blocked — the report's `sku` is a warehouse label (K1…K5) for caps, not resolved to catalogue skus yet |

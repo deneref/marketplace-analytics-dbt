@@ -294,7 +294,7 @@ order_context as (
     -- judgement about the item (fit, cut, colour) rather than a no-show — the two cases the marketplace lumps into
     -- CANCELLED_IN_DELIVERY. Rejections only, not returns: a return happens after the whole order was received, so it
     -- says nothing about a refusal at the counter, and counting it here would label post-purchase returns as refusals.
-    -- 47 orders / 54 lines today. NOT proof: a multi-parcel order could deliver one parcel and lose another in transit,
+    -- 47 orders / 55 lines as of 2026-09-14. NOT proof: a multi-parcel order could deliver one parcel and lose another in transit,
     -- and the lost line would look refused — units_rejected_defect is the hint that this happened.
     select
         *,
