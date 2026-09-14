@@ -83,14 +83,17 @@ models:
         data_tests: [not_null]
       - name: loss_reason
         description: >
-          Why the units of THIS line came back: refused_at_handover | not_collected | cancelled_by_buyer |
-          delivery_failed | unknown. NULL when nothing came back (the normal case) and NULL on returned lines — a
+          Why the units of THIS line came back: refused_at_handover | not_collected | cancelled_by_buyer | not_paid |
+          delivery_failed | unknown | not_in_source. NULL when nothing came back (the normal case) and NULL on returned lines — a
           return happens after receipt and the buyer's own reason for it lives in the returns API, which is not
           ingested; 'unknown' there would pretend the question had been asked. Two sources meet in this column and the
           priority is deliberate: the line-level evidence wins (the order kept some units and lost others → the parcel
           was opened → 'refused_at_handover'), because a partially unredeemed order is not cancelled at all and the
-          marketplace states no reason for it. Everything else takes the order's reason from int_order_cancellations,
-          falling back to 'unknown' for orders the newer source has not covered yet.
+          marketplace states no reason for it. Everything else takes the order's reason from int_order_cancellations.
+          Two values are not reasons but states of the pipeline, and they mean different things: 'not_in_source' — the
+          order has not been pulled from the business-orders source yet; 'unknown' — it IS there, but either the tree
+          found no evidence (no arrival recorded) or that source still shows the order as live while orders_stats has
+          already cancelled it, i.e. it lags. tests/assert_loss_reason_coverage.sql watches both.
         data_tests:
           - accepted_values:
               arguments:

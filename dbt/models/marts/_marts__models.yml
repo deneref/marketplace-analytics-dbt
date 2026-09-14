@@ -12,8 +12,12 @@ models:
       delivered_date (receipt), not ordered_date. Cost of goods is joined here at the line grain (unit cost of the
       version valid on delivered_date, from the partner's finance workbooks) so that contribution_margin exists at the
       finest grain and fct_sales_daily is one group by over this table. Incremental: delete+insert by order_id with
-      a 30-day window on status_updated_at, widened to all rows when the cost file was reloaded;
-      tests/assert_fct_order_lines_is_current.sql proves the window is wide enough.
+      a 30-day window on status_updated_at, widened to all rows when the cost file was reloaded, plus the orders whose
+      row in the business-orders source was loaded after the last run — the loss reason comes from a source with its own
+      schedule, and the window, anchored to the order's own clock, would never revisit them. A change to the reason tree
+      or to var pickup_storage_days reloads nothing at all, so it must be followed by a run with --full-refresh; so must
+      the first release of the loss columns. tests/assert_fct_order_lines_is_current.sql compares every column that can
+      go stale against int_order_lines — that is what turns a forgotten --full-refresh into a red test.
     data_tests:
       # incremental must not lose rows against its parent
       - dbt_utils.equal_rowcount:
@@ -23,6 +27,17 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
             expression: "not (units_delivered = 0 and revenue <> 0)"
+      # A reason exists exactly where units were refused — both directions. Left to right it guards against an
+      # order-level attribute smeared over the lines the buyer kept; right to left it catches a refused line that lost
+      # its reason (a tree change, a gap in the source). Repeated from int_order_lines deliberately: this table is a
+      # materialised copy, and the incremental window is one more way the two can diverge.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(loss_reason is not null) = (units_rejected > 0)"
+      # a flag about a reason that does not exist is meaningless
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "loss_reason_is_inferred is null or loss_reason is not null"
       - dbt_utils.expression_is_true:
           arguments:
             expression: "not (delivered_date is not null and units_delivered > 0 and revenue <= 0)"
@@ -118,6 +133,37 @@ models:
         data_tests: [not_null]
       - name: returned_stock_type
         description: "FIT | DEFECT | EXPIRED — condition of the returned goods."
+      - name: is_order_partly_kept
+        description: >
+          The order kept some units and lost others, so the parcel was opened and this line was handed back on
+          purpose. The only evidence in stats/orders that tells a refusal from a no-show (the report has no
+          substatus); rpt_sales_daily splits unredeemed on it. See int_order_lines for the caveat.
+        data_tests: [not_null]
+      - name: loss_reason
+        description: >
+          Why the units of this line were refused. The values and how each is decided live in int_order_lines.loss_reason
+          and int_order_cancellations — this is a materialised copy of that column, not a second definition. NULL
+          wherever nothing was refused, including every returned line: a return happens after receipt and its stated
+          reason lives in the returns API, which is not ingested.
+          Three ways to misread it:
+          (1) it combines with units_rejected, fee_total and contribution_margin, never with revenue — a fully lost line
+          has revenue 0, but a line that lost only part of its units keeps the revenue of the rest (line_status
+          partially_delivered; one such line in the whole history as of 2026-09-12), so "revenue by loss reason" returns
+          a small plausible number instead of an obvious zero;
+          (2) losses filtered to `loss_reason is not null` drop the returned lines — 81 lines, ≈65 000 ₽ of fees as of
+          2026-09-12 — because a return has no reason here; filter on line_status or units_rejected instead;
+          (3) this is NOT the same population as the loss rows of rpt_sales_daily, which takes lines with line_status in
+          ('unredeemed','returned') while a reason also sits on partially refused lines that the view counts as sales.
+          Both are defensible; a number has to say which question it answers.
+          'not_in_source' is not a reason: the order has not been pulled from the business-orders source yet, and
+          tests/assert_loss_reason_coverage.sql watches its share.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['refused_at_handover', 'not_collected', 'cancelled_by_buyer', 'not_paid', 'delivery_failed',
+                         'unknown', 'not_in_source']
+      - name: loss_reason_is_inferred
+        description: "Whether this line's reason rests on the storage-window inference rather than on a statement by the marketplace — 402 of the 415 refusals among the 693 unredeemed orders did as of 2026-09-12. FALSE for the line-level evidence (the parcel was demonstrably opened), NULL wherever there is no reason to speak of, including 'unknown' and 'not_in_source'."
       - name: units_ordered
         data_tests: [not_null]
       - name: units_rejected
@@ -125,6 +171,12 @@ models:
         data_tests: [not_null]
       - name: units_returned
         description: "Units returned after delivery (RETURNED events)."
+        data_tests: [not_null]
+      - name: units_rejected_defect
+        description: "Of units_rejected, the units booked as DEFECT at the warehouse — unsellable. Lower bound (stockType appears only after processing); their cost is written off nowhere in the model yet."
+        data_tests: [not_null]
+      - name: units_returned_defect
+        description: "Of units_returned, the units booked as DEFECT. Same lower bound, same gap in the cost."
         data_tests: [not_null]
       - name: units_delivered
         description: "units_ordered − units_rejected − units_returned; 0 for cancelled orders. Restated as events arrive."

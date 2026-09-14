@@ -33,6 +33,20 @@
 -- A new cost file restates cogs on EVERY line, not only recent ones: when stg_finance__unit_costs was loaded after
 -- the last run, the incremental filter widens to all rows and the whole table is rewritten (delete+insert by order_id
 -- handles that); tests/assert_fct_order_lines_is_current.sql compares cogs with the current cost version as well.
+--
+-- loss_reason is the third thing the window cannot keep current, and for a different reason. The window is anchored to
+-- max(status_updated_at) in THIS table — the last 30 days of ORDER LIFE, not of loads — and that boundary only moves
+-- forward, while the reason comes from a second source loaded on its own schedule: a reason arriving today for an order
+-- cancelled in January 2025 belongs to a row the window will never look at again. Hence the third condition below.
+-- What no predicate can cover: a change to the reason tree or to var pickup_storage_days — nothing is reloaded then,
+-- the view changes and the table does not. Such a change, and the first release of these columns, must be followed by
+-- --full-refresh; assert_fct_order_lines_is_current.sql is what turns a forgotten one into a red test.
+-- One invariant holds the scheme together: EVERY condition in the filter must be true for a whole ORDER, never for one
+-- of its lines — delete+insert keyed by order_id deletes all lines of every order it touches, so a condition true for
+-- one line and false for its sibling would delete the sibling and never insert it back. The three conditions here
+-- qualify because status_updated_at and the business-orders row are order-grained (the latter rests on
+-- unique(order_id) in stg_ym__business_orders — without that test the join in int_order_lines would also fan out),
+-- and the cost condition widens to everything.
 
 {{ config(
     materialized='incremental',
@@ -55,14 +69,32 @@ with lines as (
     from {{ ref('int_order_lines') }}
 
     {% if is_incremental() %}
+    {#- Both anchors are coalesced: an EXISTING but EMPTY table (an aborted run, a manual truncate) has max() = null,
+        every comparison would be null, no row would be selected — and the table would stay empty on every run after
+        that. With the fallbacks the next run rebuilds it. -#}
+    {%- set watermark -%}
+        coalesce((select dateadd(day, -{{ var('fct_order_lines_lookback_days', 30) }}, max(status_updated_at))
+                  from {{ this }}), '1900-01-01'::timestamp_tz)
+    {%- endset -%}
+    {%- set last_run -%}
+        coalesce((select max(convert_timezone('UTC', dbt_updated_at)::timestamp_ntz) from {{ this }}),
+                 '1900-01-01'::timestamp_ntz)
+    {%- endset -%}
     -- everything that changed since the last run, plus a window back for late fees and return events …
-    where status_updated_at >= (
-        select dateadd(day, -{{ var('fct_order_lines_lookback_days', 30) }}, max(status_updated_at))
-        from {{ this }}
-    )
+    where status_updated_at >= {{ watermark }}
     -- … or everything, when the cost file was reloaded after the last run (cogs changes on every line)
-    or (select max(_loaded_at) from {{ ref('stg_finance__unit_costs') }})
-        > (select max(convert_timezone('UTC', dbt_updated_at)::timestamp_ntz) from {{ this }})
+    or (select max(_loaded_at) from {{ ref('stg_finance__unit_costs') }}) > {{ last_run }}
+    -- … or the orders whose REASON arrived later than the last run. Per order, not "widen to everything" like the cost
+    -- condition above: the business-orders source is pulled regularly, so a max()-based form would make every run a
+    -- full rebuild. An order with no row in that source yet is picked up by this the moment one appears. Read from
+    -- staging, like the cost timestamp above, so no technical column has to travel through the analytical layer;
+    -- _loaded_at there is written per FILE at read time and is UTC (ingest/load_to_snowflake.py), the same basis as
+    -- dbt_updated_at.
+    or order_id in (
+        select order_id
+        from {{ ref('stg_ym__business_orders') }}
+        where _loaded_at > {{ last_run }}
+    )
     {% endif %}
 
 ),
@@ -119,11 +151,22 @@ final as (
         delivery_region_name,
         is_test_order,
         returned_stock_type,
+        is_order_partly_kept,                                       -- the order kept some units AND rejected some: the parcel was opened (int_order_lines)
+        -- WHY the refused units were refused (int_order_cancellations + the line-level evidence). Null wherever
+        -- nothing was refused — including returned lines, whose reason lives in the returns API and is not ingested.
+        -- Combine it with units_rejected, fee_total and contribution_margin only, never with revenue: a fully lost
+        -- line has revenue 0, but a line that lost SOME of its units keeps the revenue of the rest (line_status
+        -- partially_delivered — one line in the whole history so far), so "revenue by loss reason" returns a small
+        -- plausible number rather than an obvious zero. A share of losses is taken of the units that came back.
+        loss_reason,
+        loss_reason_is_inferred,                                    -- the reason rests on the storage-window inference, not on a statement (int_order_cancellations)
 
         -- units
         units_ordered,
         units_rejected,
         units_returned,
+        units_rejected_defect,                                      -- units that came back unsellable (warehouse booked them DEFECT): a lower bound,
+        units_returned_defect,                                      -- stockType is filled only after processing. Their cost is written off NOWHERE yet.
         units_delivered,
 
         -- price of the line as ordered
@@ -155,7 +198,7 @@ final as (
         -- cost of goods: delivered units at the unit cost valid on delivered_date. Like revenue, 0 while in flight
         -- (no delivered_date → no cost version → unit_cost null), restated on returns
         unit_cost,                                                  -- per unit, RUB — reference, not additive
-        cost_basis,                                                 -- batch_actual | supply_allocated | plan_2024
+        cost_basis,                                                 -- batch_actual | supply_allocated
         coalesce(is_cost_estimate, false)                           as is_cost_estimate,
         round(units_delivered * coalesce(unit_cost, 0), 2)          as cogs,
         iff(coalesce(is_cost_estimate, false),

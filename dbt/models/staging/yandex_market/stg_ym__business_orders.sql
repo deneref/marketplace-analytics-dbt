@@ -29,9 +29,9 @@ with src as (
 latest as (
 
     -- Windows abut by creation date (creationDateTo is exclusive), so one backfill writes each order once; a re-run
-    -- or a future catch-up writes it again, hence the same dedup rule as stg_ym__orders. The tie-break matters:
-    -- _loaded_at is identical for every file of one load, so two run folders ingested together would otherwise be
-    -- ordered at random and a stale snapshot could win. updateDate — the source's own "last change" — breaks the tie.
+    -- or a future catch-up writes it again, hence the same dedup rule as stg_ym__orders. _loaded_at is stamped per FILE
+    -- at read time in UTC (ingest/load_to_snowflake.py), so it does order two run folders correctly; the tie-break is
+    -- for files read within the same timestamp — updateDate, the source's own "last change", decides then.
     select *
     from src
     qualify row_number() over (

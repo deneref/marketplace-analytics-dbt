@@ -343,7 +343,7 @@ final as (
             when units_rejected = 0                     then null
             when is_order_partly_kept                   then false
             when not is_in_business_orders              then null
-            when order_cancellation_reason is null      then null
+            when coalesce(order_cancellation_reason, 'unknown') = 'unknown' then null   -- 'unknown' is the absence of a reason, not a reason resting on a statement
             else order_reason_is_inferred
         end                                                             as loss_reason_is_inferred
     from order_context
