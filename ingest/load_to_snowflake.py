@@ -165,22 +165,27 @@ def main() -> None:
 
     prepared: set[str] = set()
     files = sorted(p for p in RAW_DIR.rglob("*") if p.suffix in (".csv", ".jsonl"))
+    # One write_pandas per table, not per file: a daily stock backfill is 600 small CSVs, and each write_pandas is a
+    # PUT + COPY round trip (~2-3 s) — batching turns 30 minutes into one. _SOURCE_FILE keeps the per-file provenance.
+    by_table: dict[str, list[pathlib.Path]] = {}
     for f in files:
-        rel = str(f.relative_to(RAW_DIR))
-        if rel in loaded:
-            continue
-        report_dir = f.relative_to(RAW_DIR).parts[0]
-        tbl = table_name(report_dir, f)
-        df = read_any(f)
+        if str(f.relative_to(RAW_DIR)) not in loaded:
+            by_table.setdefault(table_name(f.relative_to(RAW_DIR).parts[0], f), []).append(f)
+    for tbl, tbl_files in by_table.items():
+        frames = [read_any(f) for f in tbl_files]
+        df = pd.concat(frames, ignore_index=True, sort=False) if len(frames) > 1 else frames[0]
+        df = df.where(df.notna(), None).astype(object)     # concat re-introduces NaN for columns missing in some files
         ensure_table(conn, tbl, list(df.columns), recreate=a.reload and tbl not in prepared)
         prepared.add(tbl)
-        if len(df) == 0:                                   # header-only file (e.g. an empty appendix): nothing to copy
-            print(f"{rel} → {tbl}: 0 rows (empty file)")
+        if len(df) == 0:                                   # header-only file(s) (e.g. an empty appendix): nothing to copy
+            print(f"{tbl}: {len(tbl_files)} file(s), 0 rows (empty)")
         else:
             ok, _, nrows, _ = write_pandas(conn, df, tbl, auto_create_table=False, overwrite=False, quote_identifiers=False)
-            print(f"{rel} → {tbl}: {nrows} rows, ok={ok}")
-        loaded.add(rel)
-    MANIFEST.write_text("\n".join(sorted(loaded)))
+            print(f"{tbl}: {len(tbl_files)} file(s) → {nrows} rows, ok={ok}")
+            if not ok:
+                raise RuntimeError(f"write_pandas reported failure for {tbl}")
+        loaded.update(str(f.relative_to(RAW_DIR)) for f in tbl_files)
+        MANIFEST.write_text("\n".join(sorted(loaded)))    # after every table, so a crash mid-run never re-loads a table
     if prepared:                                           # new/changed tables: refresh their descriptions
         apply_comments(conn, prepared)
     conn.close()
