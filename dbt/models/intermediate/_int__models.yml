@@ -258,43 +258,55 @@ models:
 
   - name: int_stock_daily
     description: >
-      Stock of one SKU at one warehouse on one snapshot day, stock types pivoted to columns from
-      stg_ym__stock_levels. Types are not additive — units_fit = units_available + units_freeze — so downstream
-      picks a column, never sums across them. An offer listed at a warehouse with no stock is a row of zeros.
-      No calendar fill: days without a snapshot are absent. Parent of fct_inventory_daily.
+      End-of-day stock of one SKU at one warehouse, stock buckets pivoted to columns from stg_ym__stock_levels
+      (the stocks-on-warehouses report; daily history from 2025-01-08). Buckets are not additive —
+      units_fit = units_available + units_freeze — so downstream picks a column, never sums across them. A SKU listed
+      at a warehouse with no stock is a row of zeros. Native key is the warehouse NAME as the report prints it;
+      warehouse_id is resolved from stg_ym__warehouses and NULL for a name the marketplace no longer lists
+      (assert_stock_warehouses_resolve). sku may be a warehouse label K1…K5 for caps (dim_products.warehouse_sku).
+      No calendar fill: days without a report are absent. Parent of fct_inventory_daily.
     data_tests:
       # grain
       - dbt_utils.unique_combination_of_columns:
           arguments:
-            combination_of_columns: [snapshot_date, sku, warehouse_id]
-      # documented relation between the types (getStocks: FIT = sellable or reserved); warn if the data disagrees
+            combination_of_columns: [snapshot_date, sku, warehouse_name]
+      # documented relation between the buckets (VALID = AVAILABLE_FOR_ORDER + RESERVED); warn if the report disagrees
       - dbt_utils.expression_is_true:
           arguments:
             expression: "units_fit = units_available + units_freeze"
           config: {severity: warn}
     columns:
       - name: snapshot_date
+        description: "Day the stock is as of (end of day) — reportDate − 1 of the report."
         data_tests: [not_null]
       - name: sku
         data_tests: [not_null]
-      - name: warehouse_id
+      - name: warehouse_name
+        description: "Warehouse name as printed by the report — the key this model is unique on."
         data_tests: [not_null]
+      - name: warehouse_id
+        description: "Marketplace warehouse id from stg_ym__warehouses by exact name; NULL when unresolved (closed warehouse) — see assert_stock_warehouses_resolve."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_ym__warehouses')
+                field: warehouse_id
       - name: units_fit
-        description: "Good stock: sellable or reserved (FIT). Base for stock value and days of cover."
+        description: "Good stock: sellable or reserved (report VALID = FIT). Base for stock value and days of cover."
         data_tests:
           - not_null
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
       - name: units_available
-        description: "Sellable right now (AVAILABLE) — what the buyer sees."
+        description: "Sellable right now (report AVAILABLE_FOR_ORDER = AVAILABLE) — what the buyer sees."
         data_tests:
           - not_null
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
       - name: units_freeze
-        description: "Reserved for placed, not yet shipped orders (FREEZE)."
+        description: "Reserved for placed, not yet shipped orders (report RESERVED = FREEZE)."
         data_tests:
           - not_null
           - dbt_utils.accepted_range:
@@ -314,8 +326,12 @@ models:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
-      - name: stock_updated_at
-        description: "Latest updatedAt of the offer × warehouse in the snapshot."
+      - name: units_expired
+        description: "Expired units (EXPIRED) — always 0 for apparel; kept because the report has the column."
+        data_tests: [not_null]
+      - name: units_utilization
+        description: "Units handed over for disposal (UTILIZATION)."
+        data_tests: [not_null]
       - name: is_out_of_stock
         description: "units_available = 0 — nothing sellable; units_fit may still be > 0 when everything is reserved."
         data_tests: [not_null]
