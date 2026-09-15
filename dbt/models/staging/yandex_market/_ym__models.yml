@@ -697,24 +697,28 @@ models:
 
   - name: stg_ym__stock_levels
     description: >
-      Daily stock snapshot (stock_snapshots) typed and flattened: one row per snapshot_date × sku × warehouse_id ×
-      stock_type, units = count. Offers listed at a warehouse with no stock ('[]' in RAW) are kept as one row with
-      stock_type NULL and units 0 (is_empty_stock = TRUE). Latest load per offer × warehouse × day wins. Stock types
-      are not additive (FIT = AVAILABLE + FREEZE) — int_stock_daily picks the types it needs; never sum across them.
-      Source of fct_inventory_daily and dim_warehouses.
+      End-of-day stock per snapshot_date × sku × warehouse_name × stock_type from the 'stocks-on-warehouses' REPORT
+      (stock_reports; daily history from 2025-01-08, kept current by ingest/daily.sh). Replaced the offers/stocks JSON
+      snapshot on 2026-09-14 — same output shape: one row per bucket with units, and one NULL-type row with units 0
+      when a SKU is listed at a warehouse with nothing in any bucket (is_empty_stock). snapshot_date = reportDate − 1
+      (the report holds the day before the requested date; verified against the last JSON snapshot). Warehouses are
+      NAMES here — the id is joined in int_stock_daily from stg_ym__warehouses. Buckets keep the JSON endpoint's
+      vocabulary (VALID → FIT, RESERVED → FREEZE, AVAILABLE_FOR_ORDER → AVAILABLE) and are not additive
+      (FIT = AVAILABLE + FREEZE) — never sum across them. Caps arrive under their warehouse SKU (K1…K5), like the
+      turnover report; resolved in the mart. Latest load per sku × warehouse × reportDate wins.
     data_tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
-            combination_of_columns: [snapshot_date, sku, warehouse_id, stock_type]
+            combination_of_columns: [snapshot_date, sku, warehouse_name, stock_type]
     columns:
       - name: stock_level_key
-        description: "Surrogate key: snapshot_date + sku + warehouse_id + stock_type (NULL type gets the dbt_utils null placeholder, so empty rows are keyed too)."
+        description: "Surrogate key: snapshot_date + sku + warehouse_name + stock_type (NULL type gets the dbt_utils null placeholder, so empty rows are keyed too)."
         data_tests: [unique, not_null]
       - name: snapshot_date
-        description: "Date of the snapshot (added by ingest/yandex_market.py, one snapshot per day by cron)."
+        description: "Day the stock is as of (end of day) = reportDate − 1. History from 2025-01-08; a missing day is re-requestable with `--report stocks-report --date <day + 1>`."
         data_tests: [not_null]
       - name: sku
-        description: "Seller's SKU (offerId) — the same value as sku in stg_ym__offers and stg_ym__order_lines."
+        description: "Seller's SKU as the report prints it. Caps come as the warehouse label K1…K5 (see dim_products.warehouse_sku), hence the relationship to stg_ym__offers is a warning."
         data_tests:
           - not_null
           - relationships:
@@ -722,31 +726,55 @@ models:
                 to: ref('stg_ym__offers')
                 field: sku
               config: {severity: warn}
-      - name: warehouse_id
-        description: "Market warehouse id (FBY) the stock is held at; ~8 warehouses so far. Key of dim_warehouses."
+      - name: warehouse_name
+        description: "Warehouse NAME as the report prints it (e.g. 'МО Софьино (кроме КГТ) - 1'); resolved to warehouse_id in int_stock_daily via stg_ym__warehouses. Closed warehouses ('ЛО Парголово', 2025) appear only in history."
         data_tests: [not_null]
       - name: stock_type
         description: >
           Stock bucket: FIT (sellable or reserved = AVAILABLE + FREEZE), AVAILABLE (sellable now), FREEZE (reserved
-          for orders), QUARANTINE, DEFECT, EXPIRED, UTILIZATION. NULL only for empty-stock rows. Open list — the
-          accepted_values test warns, not fails.
+          for orders), QUARANTINE, DEFECT, EXPIRED, UTILIZATION. NULL only for empty-stock rows. Closed list here —
+          the report has exactly these seven columns.
         data_tests:
           - accepted_values:
               arguments:
                 values: ['FIT', 'AVAILABLE', 'FREEZE', 'QUARANTINE', 'DEFECT', 'EXPIRED', 'UTILIZATION']
-              config: {severity: warn}
       - name: units
-        description: "Units in this bucket (count); 0 for empty-stock rows."
+        description: "Units in this bucket; > 0 on typed rows, 0 on the empty-stock row."
         data_tests:
           - not_null
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
       - name: is_empty_stock
-        description: "TRUE when RAW STOCKS was '[]' — the offer is listed at the warehouse but has no stock of any type."
+        description: "TRUE when every bucket of the SKU × warehouse row is 0 — listed at the warehouse but no stock of any type (the report prints such rows with SELLING_STATUS 'Нет на складе')."
         data_tests: [not_null]
-      - name: stock_updated_at
-        description: "When the marketplace last updated the stock figure (updatedAt); NULL for empty-stock rows."
+
+  - name: stg_ym__warehouses
+    description: >
+      Marketplace (FBY) warehouses from GET v2/warehouses, one row per warehouse_id ever seen, latest daily snapshot wins.
+      The bridge between the stock report (warehouse NAMES) and orders / the old JSON snapshot (warehouse ids):
+      int_stock_daily joins stg_ym__stock_levels.warehouse_name = warehouse_name. Base of dim_warehouses.
+    columns:
+      - name: warehouse_id
+        description: "Marketplace warehouse id (172 = МО Софьино, 313 = ЛО Шушары, 305 = Ростов-на-Дону-2, 300 = Екатеринбург, 302 = Самара, 501 = Домодедово возвратный)."
+        data_tests: [unique, not_null]
+      - name: warehouse_name
+        description: "Name as the marketplace prints it; must equal the stock report's WAREHOUSE column character for character."
+        data_tests: [unique, not_null]
+      - name: city
+        description: "City from the address JSON."
+      - name: street
+        description: "Street from the address JSON."
+      - name: latitude
+        description: "GPS latitude from the address JSON."
+      - name: longitude
+        description: "GPS longitude from the address JSON."
+      - name: last_seen_date
+        description: "Latest snapshot_date the warehouse appeared in."
+        data_tests: [not_null]
+      - name: is_current
+        description: "TRUE when the warehouse is in the latest pull; FALSE keeps a closed / renamed warehouse resolvable for history."
+        data_tests: [not_null]
 
   - name: stg_ym__turnover_report
     description: >
