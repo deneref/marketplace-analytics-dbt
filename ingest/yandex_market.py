@@ -126,21 +126,37 @@ def report_goods_realization(year_month: str, run_date: str) -> list[pathlib.Pat
     return download_zip(url, RAW_DIR / "goods_realization" / run_date / year_month)
 
 
-def report_stocks_on_warehouses(report_date: str, run_date: str) -> list[pathlib.Path]:
-    """Stock per SKU × warehouse as a report (POST reports/stocks-on-warehouses/generate), unlike `stocks` (JSON, today only).
-    Docs: `reportDate` is FBY/LaaS-only and the report holds the stock of the day BEFORE report_date; no history
-    depth is documented (the 90-day limit is stated for united-orders / turnover / movement, not here) — this mode
-    exists to test how far back it really goes. 1 request / 2 min without a plan."""
+def _stocks_report_once(report_date: str, run_date: str) -> list[pathlib.Path]:
+    """One generate → poll → download of the stocks-on-warehouses report for report_date, no retries."""
     body = {"campaignId": int(os.environ["YM_CAMPAIGN_ID"]), "reportDate": report_date}
     res = _post("reports/stocks-on-warehouses/generate", body, params={"format": "CSV"})["result"]
     print(f"stocks-report reportDate={report_date}: reportId={res['reportId']} "
           f"eta={res.get('estimatedGenerationTime', 0) / 1000:.0f}s", file=sys.stderr)
-    url = wait_for_report(res["reportId"], timeout_s=300)   # normally DONE in ~10 s; a report stuck longer is re-requested by the caller
+    url = wait_for_report(res["reportId"], timeout_s=300)   # normally DONE in ~10 s; a report stuck longer is re-requested below
     files = download_zip(url, RAW_DIR / "stock_reports" / run_date / report_date)
     for f in files:
         lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
         print(f"  {f.name}: {max(len(lines) - 1, 0)} data rows", file=sys.stderr)
     return files
+
+
+def report_stocks_on_warehouses(report_date: str, run_date: str, attempts: int = 3) -> list[pathlib.Path]:
+    """Stock per SKU × warehouse as a report (POST reports/stocks-on-warehouses/generate) — the stock source since
+    2026-09-14. `reportDate` is FBY/LaaS-only and the report holds the stock at the END of the day BEFORE report_date;
+    history goes back to at least 2025-01 (no documented depth limit). 1 request / 2 min without a plan.
+    Retries the three failures seen in a 600-report backfill and in the daily run: the rate limit (HTTP 420/429 when two
+    requests land inside 2 minutes), a report stuck in PENDING (the morning report for 'today' is not always ready by
+    10:00 MSK), and a download that is not a zip. Anything else is raised as is."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return _stocks_report_once(report_date, run_date)
+        except (RuntimeError, TimeoutError) as e:
+            retryable = isinstance(e, TimeoutError) or any(x in str(e) for x in ("429", "420", "LIMIT", "not a zip"))
+            if attempt == attempts or not retryable:
+                raise
+            print(f"  retry {attempt}/{attempts} after 130s: {str(e).splitlines()[0][:120]}", file=sys.stderr)
+            time.sleep(130)
+    raise AssertionError("unreachable")
 
 
 def report_stocks_on_warehouses_range(date_from: str, date_to: str, step_days: int, run_date: str) -> list[pathlib.Path]:
@@ -153,17 +169,9 @@ def report_stocks_on_warehouses_range(date_from: str, date_to: str, step_days: i
         if done:                                     # restartable: a date already pulled (any run_date) is skipped
             print(f"stocks-report reportDate={day}: already have {done[0]}", file=sys.stderr)
         else:
-            for attempt in range(1, 4):              # expected failures: the 1 / 2 min rate limit, a report stuck in PENDING, a bad download
-                try:
-                    files += report_stocks_on_warehouses(day, run_date)
-                    break
-                except (RuntimeError, TimeoutError) as e:
-                    retryable = isinstance(e, TimeoutError) or any(x in str(e) for x in ("429", "420", "LIMIT", "not a zip"))
-                    if attempt == 3 or not retryable:
-                        raise
-                    print(f"  retry {attempt}/3 after 130s: {str(e)[:120]}", file=sys.stderr)
-                    time.sleep(130)
-            time.sleep(125)
+            files += report_stocks_on_warehouses(day, run_date)   # retries live there
+            if d + dt.timedelta(days=step_days) <= end:          # no idle wait after the last date
+                time.sleep(125)
         d += dt.timedelta(days=step_days)
     return files
 
@@ -304,7 +312,7 @@ def business_orders(date_from: str, date_to: str, run_date: str, window_days: in
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--report", required=True, choices=["united-orders", "goods-turnover", "stocks", "offer-mappings", "orders-stats",
-                                                    "shows-sales", "goods-realization", "stocks-report", "business-orders"])
+                                                    "shows-sales", "goods-realization", "stocks-report", "business-orders", "warehouses"])
     ap.add_argument("--step", type=int, default=7, help="stocks-report with --from/--to: days between reportDates")
     ap.add_argument("--from", dest="date_from")
     ap.add_argument("--to", dest="date_to")
