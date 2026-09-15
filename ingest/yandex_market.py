@@ -7,7 +7,8 @@ download the file (link is valid for 60 minutes) → unzip CSV sheets into data/
 Usage:
   python ingest/yandex_market.py --report united-orders --from 2025-01-01 --to 2025-12-31
   python ingest/yandex_market.py --report goods-turnover --date 2026-09-06
-  python ingest/yandex_market.py --report stocks           # JSON endpoint, not a report
+  python ingest/yandex_market.py --report stocks           # JSON endpoint, not a report — superseded by stocks-report (2026-09-14)
+  python ingest/yandex_market.py --report warehouses       # FBY warehouses: id ↔ name (the stock report prints names)
   python ingest/yandex_market.py --report stocks-report --date 2025-06-01            # stock report for a PAST date (reportDate)
   python ingest/yandex_market.py --report stocks-report --from 2025-01-08 --to 2026-09-01 --step 7   # weekly backfill
   python ingest/yandex_market.py --report offer-mappings   # catalogue: category, vendor, dimensions, prices (JSON)
@@ -192,6 +193,21 @@ def stocks_snapshot(run_date: str) -> pathlib.Path:
     return out
 
 
+def warehouses_snapshot(run_date: str) -> pathlib.Path:
+    """FBY warehouses of the marketplace (GET v2/warehouses): id, name, address. Names are what the stock report prints
+    in its WAREHOUSE column, ids are what the orders carry — this is the bridge. 100 requests / hour, tiny payload."""
+    target = RAW_DIR / "warehouses" / run_date
+    target.mkdir(parents=True, exist_ok=True)
+    out = target / "warehouses.jsonl"
+    res = _get("warehouses", params={"campaignId": os.environ["YM_CAMPAIGN_ID"]})["result"]
+    items = res.get("warehouses", []) if isinstance(res, dict) else res
+    with out.open("w", encoding="utf-8") as fh:
+        for w in items:
+            fh.write(json.dumps({"snapshot_date": run_date, **w}, ensure_ascii=False) + "\n")
+    print(f"warehouses: {len(items)} rows → {out}", file=sys.stderr)
+    return out
+
+
 def _paginated_jsonl(path: str, body: dict, out: pathlib.Path, key: str, extra: dict) -> pathlib.Path:
     """POST a paginated JSON endpoint (limit/page_token) and write result[key] items as JSONL."""
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -319,6 +335,8 @@ def main() -> None:
             sys.exit("--date YYYY-MM-DD (one reportDate) or --from/--to [--step N] are required")
     elif a.report == "offer-mappings":
         files = [offer_mappings(run_date)]
+    elif a.report == "warehouses":
+        files = [warehouses_snapshot(run_date)]
     elif a.report == "orders-stats":
         if not (a.date_from and a.date_to):
             sys.exit("--from and --to are required")

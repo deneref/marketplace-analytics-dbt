@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Daily snapshot: catalogue + stocks from the Yandex Market Partner API → data/raw/ → Snowflake RAW.
-# These two endpoints are point-in-time (no history in the API), so their history only exists if we take it
-# every day. Orders are NOT here on purpose: orders-stats has full history and is refreshed by the weekly run.
+# Daily snapshot: catalogue + warehouses + yesterday's stock from the Yandex Market Partner API → data/raw/ → Snowflake RAW.
+# Catalogue and warehouses are point-in-time (no history in the API), so their history only exists if we take it
+# every day; the stock report has history (reportDate), the daily run just keeps it current.
+# Orders are NOT here on purpose: orders-stats has full history and is refreshed by the weekly run.
 #
-#   bash ingest/daily.sh                 # today's offer-mappings + stocks, then load new files to Snowflake
+#   bash ingest/daily.sh                 # today's offer-mappings + warehouses + yesterday's stock, then load new files to Snowflake
 #   DBT=1 bash ingest/daily.sh           # …and rebuild + test the staging layer afterwards
 #
 # Scheduled on the laptop by launchd (scripts/launchd/com.marketplace-analytics.daily.plist); logs in logs/daily/.
@@ -26,7 +27,12 @@ run() {                                       # run <label> <cmd...>: log, conti
 
 run "offer-mappings (catalogue snapshot)" "$PY" ingest/yandex_market.py --report offer-mappings
 sleep 5
-run "stocks (stock snapshot)"             "$PY" ingest/yandex_market.py --report stocks
+run "warehouses (id ↔ name)"              "$PY" ingest/yandex_market.py --report warehouses
+sleep 5
+# Stock: the 'stocks-on-warehouses' REPORT with reportDate = today = the stock at the end of YESTERDAY. Replaced the
+# offers/stocks JSON endpoint on 2026-09-14: the report can be requested for any past date (a missed day is one
+# request away, not lost), and end-of-day is the right semantic for a daily fact. Path: data/raw/stock_reports/.
+run "stocks-report (end of yesterday)"    "$PY" ingest/yandex_market.py --report stocks-report --date "$TODAY"
 run "load new files to Snowflake RAW"     "$PY" ingest/load_to_snowflake.py
 
 if [[ "${DBT:-0}" == "1" ]]; then
