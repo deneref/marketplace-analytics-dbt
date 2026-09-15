@@ -740,8 +740,8 @@ sources:
           ids. Small (≈10 rows); latest snapshot wins in stg_ym__warehouses. Warehouses that no longer exist (e.g. 'ЛО Парголово',
           2025) may be absent — the staging keeps every id ever seen.
         columns:
-          - name: SNAPSHOT_DATE
-            description: Day the list was pulled (added by ingest/yandex_market.py); one pull per day by cron.
+          - name: ADDRESS
+            description: JSON {city, street, number, building, block, gps {latitude, longitude}} — kept as text.
           - name: ID
             description: >-
               Marketplace warehouse id — the value orders and the old STOCK_SNAPSHOTS carry (172 = МО Софьино, 313 = ЛО
@@ -750,8 +750,19 @@ sources:
             description: >-
               Warehouse name as the marketplace prints it — must match STOCK_REPORTS_STOCKS_ON_WAREHOUSES.WAREHOUSE exactly;
               int_stock_daily joins on it and warns on any name it cannot resolve.
-          - name: ADDRESS
-            description: JSON {city, street, number, building, block, gps {latitude, longitude}} — kept as text.
+          - name: SNAPSHOT_DATE
+            description: Day the list was pulled (added by ingest/yandex_market.py); one pull per day by cron.
+          - name: _RAW_JSON
+            description: >-
+              The whole source record as JSON text — parse_json() in staging for anything not broken out into a column.
+          - name: _LOADED_AT
+            description: >-
+              UTC timestamp (ISO 8601) when load_to_snowflake.py wrote the row. Freshness field; with _SOURCE_FILE it identifies
+              a load batch.
+          - name: _SOURCE_FILE
+            description: >-
+              Path of the source file relative to data/raw/ (e.g. orders_stats/2026-09-04/2025-01-01_2025-03-31.jsonl).
+              Carries the download date and the requested period; replay / dedup key.
       - name: orders_stats
         identifier: ORDERS_STATS
         description: >-
