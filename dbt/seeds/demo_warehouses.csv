@@ -1,0 +1,3 @@
+SNAPSHOT_DATE,ID,NAME,ADDRESS,_RAW_JSON,_LOADED_AT,_SOURCE_FILE
+2025-12-31,147,Демо-склад Москва,"{""city"": ""Москва"", ""street"": ""Демо"", ""number"": ""1"", ""gps"": {""latitude"": 55.75, ""longitude"": 37.62}}","{""id"": 147, ""name"": ""Демо-склад Москва""}",2026-01-05T10:00:00+00:00,demo/warehouses/2025-12-31/warehouses.jsonl
+2025-12-31,172,Демо-склад Санкт-Петербург,"{""city"": ""Санкт-Петербург"", ""street"": ""Демо"", ""number"": ""1"", ""gps"": {""latitude"": 55.75, ""longitude"": 37.62}}","{""id"": 172, ""name"": ""Демо-склад Санкт-Петербург""}",2026-01-05T10:00:00+00:00,demo/warehouses/2025-12-31/warehouses.jsonl

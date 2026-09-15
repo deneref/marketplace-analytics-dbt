@@ -3,7 +3,7 @@ Generate synthetic demo data with the same shape as the RAW tables, so the whole
 (`dbt build --vars '{"use_demo_seeds": true}'`) runs without API access and without exposing real sales.
 
 Writes: dbt/seeds/demo_united_orders_orders.csv, demo_united_orders_services.csv,
-        demo_goods_turnover.csv, demo_stock_snapshots.csv, demo_cogs_by_sku.csv
+        demo_goods_turnover.csv, demo_stock_reports.csv, demo_warehouses.csv, demo_cogs_by_sku.csv
 
 Column names = the real report headers (verified against the first download, 2026-09-03), restricted to the
 columns staging actually uses. Keep in sync with dbt/models/staging/yandex_market/_ym__sources.yml.
@@ -24,7 +24,8 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 START, END = dt.date(2025, 1, 1), dt.date(2025, 12, 31)
 CATEGORIES = {"t-shirts": 12, "hoodies": 8, "caps": 5, "accessories": 5}
-WAREHOUSES = [147, 172]                       # numeric warehouse ids, like the stocks endpoint
+WAREHOUSES = [147, 172]                       # numeric warehouse ids, like orders and GET v2/warehouses
+WAREHOUSE_NAMES = {147: "Демо-склад Москва", 172: "Демо-склад Санкт-Петербург"}   # the stock REPORT prints names
 REGIONS = ["Москва", "Санкт-Петербург", "Казань", "Новосибирск", "Екатеринбург"]
 # (offer_status on the order-line sheet, order_status on the per-order services sheet)
 STATUSES = [("Delivered to buyer", "Delivered")] * 85 + [("Cancelled", "Canceled during processing")] * 8 \
@@ -121,12 +122,22 @@ while d <= END:
         stock[(w, sku)] = max(0, qty - sold)
         if d.day == 1 or stock[(w, sku)] < 10:          # monthly replenishment + safety restock
             stock[(w, sku)] += random.randint(30, 80)
-        # same shape as the stocks endpoint JSONL: `stocks` is a JSON array of {type, count}
-        snapshots.append({"SNAPSHOT_DATE": d.isoformat(), "WAREHOUSE_ID": w, "OFFERID": sku,
-                          "STOCKS": json.dumps([{"type": "FIT", "count": stock[(w, sku)]},
-                                                {"type": "AVAILABLE", "count": stock[(w, sku)]}]),
-                          "UPDATEDAT": f"{d.isoformat()}T06:00:00+03:00",
-                          "_LOADED_AT": LOADED_AT, "_SOURCE_FILE": "demo"})
+        # same shape as the stocks-on-warehouses REPORT (wide, one row per SKU × warehouse; the date is NOT a column:
+        # the report requested with reportDate = d + 1 holds the stock at the end of day d, and staging reads the
+        # reportDate from the folder in _SOURCE_FILE — hence the path below)
+        qty = stock[(w, sku)]
+        snapshots.append({
+            "SHOP_SKU": sku, "ARTICLE": sku, "MARKET_SKU": 100000000000 + zlib.crc32(sku.encode()) % 10**9,
+            "PRODUCT_NAME": next(s["name"] for s in skus if s["sku"] == sku),
+            "VALID": qty, "RESERVED": 0, "AVAILABLE_FOR_ORDER": qty,
+            "QUARANTINE": 0, "UTILIZATION": 0, "DEFECT": 0, "EXPIRED": 0,
+            "LENGTH": 0, "WIDTH": 0, "HEIGHT": 0, "WEIGHT": 0,
+            "WAREHOUSE": WAREHOUSE_NAMES[w],
+            "SELLING_STATUS": "Продажи идут" if qty > 0 else "Нет на складе", "RECOMMENDATIONS": "",
+            "TURNOVER": "Нет продаж",
+            "_LOADED_AT": LOADED_AT,
+            "_SOURCE_FILE": f"demo/stock_reports/{(d + dt.timedelta(days=1)).isoformat()}/stocks_on_warehouses.csv",
+        })
     for s in skus:
         month_sales[s["sku"]].append(sold_by_day.get((d, s["sku"]), 0))
     next_day = d + dt.timedelta(days=1)
@@ -178,5 +189,13 @@ def write(name: str, rows: list[dict]) -> None:
 write("demo_united_orders_orders", orders)
 write("demo_united_orders_services", services)
 write("demo_goods_turnover", turnover)
-write("demo_stock_snapshots", snapshots)
+write("demo_stock_reports", snapshots)
+# GET v2/warehouses, flattened by ingest/yandex_market.py: one row per warehouse, address kept as JSON text
+write("demo_warehouses", [{
+    "SNAPSHOT_DATE": END.isoformat(), "ID": w, "NAME": WAREHOUSE_NAMES[w],
+    "ADDRESS": json.dumps({"city": WAREHOUSE_NAMES[w].split()[-1], "street": "Демо", "number": "1",
+                           "gps": {"latitude": 55.75, "longitude": 37.62}}, ensure_ascii=False),
+    "_RAW_JSON": json.dumps({"id": w, "name": WAREHOUSE_NAMES[w]}, ensure_ascii=False),
+    "_LOADED_AT": LOADED_AT, "_SOURCE_FILE": f"demo/warehouses/{END.isoformat()}/warehouses.jsonl",
+} for w in WAREHOUSES])
 write("demo_cogs_by_sku", cogs)
