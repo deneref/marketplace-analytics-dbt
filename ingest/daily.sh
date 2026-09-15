@@ -29,10 +29,13 @@ run "offer-mappings (catalogue snapshot)" "$PY" ingest/yandex_market.py --report
 sleep 5
 run "warehouses (id ↔ name)"              "$PY" ingest/yandex_market.py --report warehouses
 sleep 5
-# Stock: the 'stocks-on-warehouses' REPORT with reportDate = today = the stock at the end of YESTERDAY. Replaced the
-# offers/stocks JSON endpoint on 2026-09-14: the report can be requested for any past date (a missed day is one
-# request away, not lost), and end-of-day is the right semantic for a daily fact. Path: data/raw/stock_reports/.
-run "stocks-report (end of yesterday)"    "$PY" ingest/yandex_market.py --report stocks-report --date "$TODAY"
+# Stock: the 'stocks-on-warehouses' REPORT; reportDate = D holds the stock at the end of D − 1. Replaced the
+# offers/stocks JSON endpoint on 2026-09-14: the report can be requested for any past date, so a missed day is one
+# request away, not lost. Hence a 3-day window, not a single date: already-downloaded dates are skipped (normally this
+# is ONE request, for today), and a day the report was not ready for at 10:00 MSK (seen 2026-09-15) or a day the job
+# did not run at all (2026-09-14) is picked up by the next morning's run. Path: data/raw/stock_reports/.
+run "stocks-report (last 3 days, missing only)" "$PY" ingest/yandex_market.py --report stocks-report \
+    --from "$(date -v-2d +%F)" --to "$TODAY"
 run "load new files to Snowflake RAW"     "$PY" ingest/load_to_snowflake.py
 
 if [[ "${DBT:-0}" == "1" ]]; then
