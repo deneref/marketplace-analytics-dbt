@@ -83,13 +83,40 @@ TABLES: list[dict] = [
         "name": "stock_snapshots",
         "identifier": "STOCK_SNAPSHOTS",
         "description": (
-            "Daily stock snapshot per offerId × warehouse_id from POST v2/campaigns/{id}/offers/stocks, flattened by "
-            "ingest/yandex_market.py (one row per offer, warehouseId copied onto it). STOCKS is a JSON array "
-            "[{type: FIT|AVAILABLE|DEFECT|QUARANTINE|FREEZE|…, count}] stored as text → parse_json + lateral flatten in "
-            "staging. Offers with no stock come as STOCKS = '[]'."
+            "SUPERSEDED on 2026-09-14 by stock_reports — kept as an archive of the 2026-09-03..2026-09-13 daily JSON "
+            "snapshots, referenced by no model. Was: stock per offerId × warehouse_id from POST v2/campaigns/{id}/offers/stocks "
+            "(current moment only, no history), STOCKS = JSON array [{type: FIT|AVAILABLE|FREEZE|…, count}], '[]' for "
+            "an offer listed with no stock. Replaced because the report can be requested for any past date and holds "
+            "end-of-day stock; the JSON snapshot for a missed cron day is lost forever (2026-09-04 was)."
+        ),
+    },
+    {
+        "name": "stock_reports",
+        "identifier": "STOCK_REPORTS_STOCKS_ON_WAREHOUSES",
+        "description": (
+            "Stock per SHOP_SKU × WAREHOUSE on a past date — the 'Остатки на складах' report "
+            "(POST v2/reports/stocks-on-warehouses/generate with reportDate; FBY). Backfilled daily for 2025-01-08..2026-09-02 "
+            "(603 reports) because the JSON endpoint behind STOCK_SNAPSHOTS only knows the current day. The date is NOT a "
+            "column: it is the folder in _SOURCE_FILE (stock_reports/<run_date>/<reportDate>/stocks_on_warehouses.csv), and "
+            "the report holds the stock at the END of the day BEFORE reportDate (verified against the 2026-09-05 JSON snapshot: "
+            "VALID = FIT to the unit, AVAILABLE_FOR_ORDER = AVAILABLE, RESERVED = FREEZE) → snapshot_date = reportDate − 1 in "
+            "staging. Warehouses come as names, not ids (map in staging / dim_warehouses); warehouses with zero stock are "
+            "omitted from the report; caps appear under their warehouse SKU (K1…K5) like in GOODS_TURNOVER_TURNOVER. "
+            "Source of stg_ym__stock_levels since 2026-09-14; ingest/daily.sh requests reportDate = today every morning."
         ),
         "config": {"freshness": {"warn_after": {"count": 1, "period": "day"},
                                  "error_after": {"count": 3, "period": "day"}}},
+    },
+    {
+        "name": "warehouses",
+        "identifier": "WAREHOUSES",
+        "description": (
+            "FBY warehouses of the marketplace from GET v2/warehouses (one row per warehouse per daily snapshot, "
+            "snapshot_date added by ingest/yandex_market.py): ID, NAME, ADDRESS as JSON text; _RAW_JSON holds the whole "
+            "record. The bridge between the stock report, which prints warehouse NAMES, and orders / the old JSON "
+            "snapshot, which carry warehouse ids. Small (≈10 rows); latest snapshot wins in stg_ym__warehouses. "
+            "Warehouses that no longer exist (e.g. 'ЛО Парголово', 2025) may be absent — the staging keeps every id ever seen."
+        ),
     },
     {
         "name": "orders_stats",
@@ -470,6 +497,36 @@ DOCS_BY_TABLE["GOODS_TURNOVER_TURNOVER"] = {
     "SHOP_SKU": "Seller's SKU ('Ваш SKU').",
     "OFFER_NAME": "Product name ('Название товара').",
 }
+DOCS_BY_TABLE["STOCK_REPORTS_STOCKS_ON_WAREHOUSES"] = {
+    "SHOP_SKU": "Seller's SKU ('Ваш SKU'); caps come as the warehouse SKU (K1…K5) — resolve via dim_products.warehouse_sku.",
+    "ARTICLE": "Seller's article ('Артикул') — equals SHOP_SKU in every row so far.",
+    "MARKET_SKU": "Marketplace SKU ('SKU на Маркете').",
+    "PRODUCT_NAME": "Product name on the card ('Название товара').",
+    "VALID": "Good stock, units ('Годный') = FIT in the JSON snapshot: AVAILABLE_FOR_ORDER + RESERVED.",
+    "RESERVED": "Units reserved for placed orders ('Резерв') = FREEZE in the JSON snapshot.",
+    "AVAILABLE_FOR_ORDER": "Units buyers can order right now ('Доступно для заказа') = AVAILABLE in the JSON snapshot.",
+    "QUARANTINE": "Units in quarantine ('Карантин') — awaiting a decision after intake / return; not sellable.",
+    "UTILIZATION": "Units handed over for disposal ('Передан на утилизацию').",
+    "DEFECT": "Defective units ('Брак').",
+    "EXPIRED": "Expired units ('Просрочен') — never for apparel.",
+    "LENGTH": "Package length, mm ('Длина, мм') — 0 in the backfill.",
+    "WIDTH": "Package width, mm ('Ширина, мм') — 0 in the backfill.",
+    "HEIGHT": "Package height, mm ('Высота, мм') — 0 in the backfill.",
+    "WEIGHT": "Package weight, kg ('Вес, кг') — 0 in the backfill.",
+    "WAREHOUSE": "Warehouse NAME ('Склад'), e.g. 'МО Софьино (кроме КГТ) - 1', 'ЛО Шушары', 'Ростов-на-Дону-2' — the JSON "
+                 "snapshot uses warehouse ids; map name → id in staging. 'ЛО Парголово' appears only in 2025.",
+    "SELLING_STATUS": "Selling status text ('Статус продаж'): 'Продажи идут', 'Нет на складе', …",
+    "RECOMMENDATIONS": "Marketplace's replenishment recommendation text ('Рекомендации'); mostly empty.",
+    "TURNOVER": "Turnover in days ('Оборачиваемость') as text, or 'Нет продаж' — cast with try_to_decimal.",
+}
+DOCS_BY_TABLE["WAREHOUSES"] = {
+    "SNAPSHOT_DATE": "Day the list was pulled (added by ingest/yandex_market.py); one pull per day by cron.",
+    "ID": "Marketplace warehouse id — the value orders and the old STOCK_SNAPSHOTS carry (172 = МО Софьино, 313 = ЛО Шушары, "
+          "305 = Ростов-на-Дону-2, 300 = Екатеринбург, 302 = Самара, 501 = Домодедово возвратный).",
+    "NAME": "Warehouse name as the marketplace prints it — must match STOCK_REPORTS_STOCKS_ON_WAREHOUSES.WAREHOUSE exactly; "
+            "int_stock_daily joins on it and warns on any name it cannot resolve.",
+    "ADDRESS": "JSON {city, street, number, building, block, gps {latitude, longitude}} — kept as text.",
+}
 DOCS_BY_TABLE["UNITED_ORDERS_SERVICES_WITH_DECOUPLING"] = {
     "ORDER_ID": "Marketplace order number ('Номер заказа').",
 }
@@ -543,7 +600,10 @@ def build() -> tuple[dict, list[str]]:
         if "config" in t:
             entry["config"] = t["config"]
         columns = []
-        for c in cols.get(ident, []):
+        # A source documented before its first download (DOCS_BY_TABLE lists its columns) is emitted from the docs, so
+        # `dbt parse` resolves source() while the data is still on its way; raw_columns --check reconciles once it lands.
+        table_cols = cols.get(ident) or list(DOCS_BY_TABLE.get(ident, {}))
+        for c in table_cols:
             d = describe(ident, c)
             if d is None:
                 missing.append(f"{ident}.{c}")
@@ -553,7 +613,7 @@ def build() -> tuple[dict, list[str]]:
             if tests:
                 col_entry["data_tests"] = tests
             columns.append(col_entry)
-        if ident not in cols:
+        if ident not in cols and not table_cols:
             missing.append(f"{ident}: no local data in data/raw — columns unknown")
         entry["columns"] = columns
         tables_out.append(entry)
