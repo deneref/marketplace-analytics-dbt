@@ -1,4 +1,4 @@
-"""Which day does the stocks-on-warehouses report describe?  (2026-09-15, see 06_пет-проект/16_остатки_шаг1_проверки.md)
+"""Which day does the stocks-on-warehouses report describe?  (2026-09-15)
 
 Runs on local RAW only (data/raw/stock_reports, orders_stats, business_orders), no Snowflake.
 Answers three questions:

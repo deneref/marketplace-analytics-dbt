@@ -6,7 +6,7 @@
 -- Grain: date_day × sku, DENSE over the calendar from the day after the sku's first stock report to the day after
 -- the latest one. ~51 skus × ~620 days ≈ 31 k rows.
 --   * stock at the start of day D = fct_inventory_daily for snapshot_date = D − 1 (a snapshot is the END of its day;
---     an order placed on D is reserved in the row of D — 06_пет-проект/16), summed over warehouses that are not
+--     an order placed on D is reserved in the row of D — scripts/check_stock_report_day.py), summed over warehouses that are not
 --     returns warehouses (units there are parcels on their way back, shown apart as units_fit_at_returns_sod);
 --   * demand = fct_order_lines by ordered_date, the day the buyer acted. Never delivered_date;
 --   * a day without a stock report is a visible hole: is_report_missing, stock columns NULL — not zero;

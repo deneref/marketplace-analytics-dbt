@@ -2,7 +2,7 @@
 -- "was this size in stock when people were buying", days in stock, stock-outs and days of cover.
 -- Grain: snapshot_date × sku × warehouse_id, DENSE: one row for every report day × every sku × warehouse pair the
 -- report has ever listed, from the day the pair first appeared. Three decisions make it, all checked on the raw
--- reports (scripts/check_stock_report_day.py, 06_пет-проект/16 and 17, 2026-09-15):
+-- reports (scripts/check_stock_report_day.py, 2026-09-15):
 --   * snapshot_date is the end of that day, Moscow time — an order placed on day D is reserved in the row of D, so
 --     "the stock buyers saw when ordering on D" is the row of D − 1. Demand joins here on ordered_date − 1, never on
 --     delivered_date (an order is placed while the unit is in stock; the parcel arrives days later, often to a row

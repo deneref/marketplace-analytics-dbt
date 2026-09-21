@@ -12,7 +12,7 @@
 --
 -- UNIT_COST = materials + manufacturing + print + label + packaging + shipping + other, where shipping is the INBOUND
 -- logistics of the batch (factory → warehouse), NOT the marketplace delivery fee (that is fee_delivery in int_order_lines).
--- Development, photo shoots, marketing and payroll are deliberately outside COGS (see 06_пет-проект/07_cogs_разбор.md).
+-- Development, photo shoots, marketing and payroll are deliberately outside COGS.
 
 with src as (
 

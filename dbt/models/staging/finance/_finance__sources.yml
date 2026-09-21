@@ -20,8 +20,8 @@ sources:
         description: >-
           One row per SKU × cost version. UNIT_COST = sum of the seven COST_* items. Three levels of confidence in
           COST_BASIS: batch_actual (journal of the 2026 batches), supply_allocated (2024 supplies: one figure for all
-          prints of a supply), plan_2024 (planned calculation, IS_ESTIMATE = true). Methodology and open questions:
-          06_пет-проект/07_cogs_разбор.md.
+          prints of a supply), plan_2024 (planned calculation, IS_ESTIMATE = true). What is and is not in the
+          unit cost: see the header of stg_finance__unit_costs.sql.
         columns:
           - name: SKU
             description: "Seller's SKU, same key as ORDERS_STATS items.shopSku and OFFER_MAPPINGS offer.offerId."
