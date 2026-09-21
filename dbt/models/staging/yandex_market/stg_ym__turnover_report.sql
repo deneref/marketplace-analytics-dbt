@@ -7,8 +7,8 @@
 -- (goods_turnover/<download_date>/<report_date>/turnover.csv), so it is cut out of the path here.
 -- Two marketplace-formatted strings: TURNOVER = days or 'Нет продаж', AMOUNT = RUB or '-' — both go through
 -- try_to_decimal, the text is kept as has_sales / storage_amount NULL.
--- This is the marketplace's own benchmark: intermediate/marts compute turnover from stock_levels + order_lines and
--- reconcile against it (assert_turnover_matches_marketplace, ±10%) — do not build marts directly on this model.
+-- The marketplace's own turnover, taken as is: fct_inventory_turnover_monthly publishes it without recomputing
+-- (an own turnover and a reconciliation against this report were planned and dropped on 2026-09-06).
 
 with src as (
 

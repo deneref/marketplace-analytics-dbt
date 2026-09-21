@@ -786,8 +786,8 @@ models:
       Marketplace's own goods-turnover report (goods_turnover) typed: one row per report_date × sku × cluster_name.
       report_date is cut out of _source_file (…/<report_date>/turnover.csv) — the CSV has no date column. Latest
       load per sku × cluster × date wins. TURNOVER 'Нет продаж' → turnover_days NULL + has_sales FALSE; AMOUNT '-' →
-      storage_amount NULL. Reconciliation benchmark for turnover computed from stock_levels + order_lines
-      (assert_turnover_matches_marketplace, ±10%); not a source for marts on its own.
+      storage_amount NULL. Published as is by fct_inventory_turnover_monthly; the project does not compute its
+      own turnover.
     data_tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
