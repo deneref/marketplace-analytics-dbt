@@ -29,13 +29,18 @@ run "offer-mappings (catalogue snapshot)" "$PY" ingest/yandex_market.py --report
 sleep 5
 run "warehouses (id ↔ name)"              "$PY" ingest/yandex_market.py --report warehouses
 sleep 5
-# Stock: the 'stocks-on-warehouses' REPORT; reportDate = D holds the stock at the end of D − 1. Replaced the
+# Stock: the 'stocks-on-warehouses' REPORT; reportDate = D holds the stock at the END of D (checked on orders 2026-09-15,
+# scripts/check_stock_report_day.py — the API docs' "day before" is wrong). So the newest closed day is YESTERDAY: a report
+# for today is a mid-day state, and since already-downloaded dates are skipped it would never be refreshed. Replaced the
 # offers/stocks JSON endpoint on 2026-09-14: the report can be requested for any past date, so a missed day is one
-# request away, not lost. Hence a 3-day window, not a single date: already-downloaded dates are skipped (normally this
-# is ONE request, for today), and a day the report was not ready for at 10:00 MSK (seen 2026-09-15) or a day the job
-# did not run at all (2026-09-14) is picked up by the next morning's run. Path: data/raw/stock_reports/.
-run "stocks-report (last 3 days, missing only)" "$PY" ingest/yandex_market.py --report stocks-report \
-    --from "$(date -v-2d +%F)" --to "$TODAY"
+# request away, not lost. Hence a 3-day window ending yesterday, not a single date: normally this is ONE request, and a
+# day the report was not ready for at 10:00 MSK (seen 2026-09-15) or a day the job did not run at all (2026-09-14) is
+# picked up by the next morning's run. Path: data/raw/stock_reports/.
+# --step 1 is NOT optional: the range walker jumps by --step, whose default used to be 7 (the weekly backfill),
+# so the 3-day window only ever requested its FIRST date and every daily run landed on D-3 (2026-09-16..18: one
+# reportDate a day, always three days stale). Fixed 2026-09-18 — default is 1 now, and it is passed explicitly here.
+run "stocks-report (3 days up to yesterday, missing only)" "$PY" ingest/yandex_market.py --report stocks-report \
+    --from "$(date -v-3d +%F)" --to "$(date -v-1d +%F)" --step 1
 run "load new files to Snowflake RAW"     "$PY" ingest/load_to_snowflake.py
 
 if [[ "${DBT:-0}" == "1" ]]; then

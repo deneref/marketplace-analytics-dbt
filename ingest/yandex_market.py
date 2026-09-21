@@ -142,8 +142,10 @@ def _stocks_report_once(report_date: str, run_date: str) -> list[pathlib.Path]:
 
 def report_stocks_on_warehouses(report_date: str, run_date: str, attempts: int = 3) -> list[pathlib.Path]:
     """Stock per SKU × warehouse as a report (POST reports/stocks-on-warehouses/generate) — the stock source since
-    2026-09-14. `reportDate` is FBY/LaaS-only and the report holds the stock at the END of the day BEFORE report_date;
-    history goes back to at least 2025-01 (no documented depth limit). 1 request / 2 min without a plan.
+    2026-09-14. `reportDate` is FBY/LaaS-only and the report holds the stock at the END of report_date itself (the docs say
+    "the day before", the data says otherwise: orders of day D are reserved in the report of D — scripts/check_stock_report_day.py).
+    So never request today: that is a mid-day state and the range walker would skip it forever. History goes back to at
+    least 2025-01 (no documented depth limit). 1 request / 2 min without a plan.
     Retries the three failures seen in a 600-report backfill and in the daily run: the rate limit (HTTP 420/429 when two
     requests land inside 2 minutes), a report stuck in PENDING (the morning report for 'today' is not always ready by
     10:00 MSK), and a download that is not a zip. Anything else is raised as is."""
@@ -313,7 +315,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--report", required=True, choices=["united-orders", "goods-turnover", "stocks", "offer-mappings", "orders-stats",
                                                     "shows-sales", "goods-realization", "stocks-report", "business-orders", "warehouses"])
-    ap.add_argument("--step", type=int, default=7, help="stocks-report with --from/--to: days between reportDates")
+    ap.add_argument("--step", type=int, default=1, help="stocks-report with --from/--to: days between reportDates (1 = every day; the weekly backfill passes --step 7)")
     ap.add_argument("--from", dest="date_from")
     ap.add_argument("--to", dest="date_to")
     ap.add_argument("--date")
