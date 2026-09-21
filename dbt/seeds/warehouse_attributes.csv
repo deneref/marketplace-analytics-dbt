@@ -1,0 +1,14 @@
+warehouse_id,cluster_name,warehouse_role,sort_order
+172,Москва,fulfillment,1
+308,Москва,fulfillment,2
+304,Москва,oversized,3
+316,Москва,fulfillment,4
+313,Санкт-Петербург,fulfillment,5
+301,Санкт-Петербург,fulfillment,6
+300,Екатеринбург,fulfillment,7
+314,Казань,fulfillment,8
+302,Самара,fulfillment,9
+147,Ростов,fulfillment,10
+305,Ростов,fulfillment,11
+500,Москва,returns,12
+501,Москва,returns,13

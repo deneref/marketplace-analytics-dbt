@@ -90,3 +90,35 @@ seeds:
       - dbt_utils.expression_is_true:
           arguments:
             expression: "(lifecycle_status = 'discontinued') = (discontinued_date is not null)"
+
+  - name: warehouse_attributes
+    description: >
+      What the marketplace's warehouse list does not say about its own warehouses: which turnover cluster
+      (MACROREGION_NAME of the goods-turnover report: Москва, Санкт-Петербург, Екатеринбург, Казань, Ростов; Самара
+      has not appeared in a report yet) the warehouse reports under, and its role — fulfillment (sells), oversized
+      (КГТ, sells but takes bulky goods only), returns (holds unredeemed parcels on their way back; stock there is not
+      what a buyer can order). Keyed by the marketplace warehouse id; 13 rows as of 2026-09-15, add one when
+      GET v2/warehouses lists a new id (dim_warehouses warns on a missing row). Demo seeds use other ids and get NULLs.
+    config:
+      column_types:
+        warehouse_id: integer
+        cluster_name: varchar
+        warehouse_role: varchar
+        sort_order: integer
+    columns:
+      - name: warehouse_id
+        description: "Marketplace warehouse id (GET v2/warehouses, also warehouse.id on orders)."
+        data_tests: [unique, not_null]
+      - name: cluster_name
+        description: "Cluster / macro-region as the goods-turnover report names it — join key to fct_inventory_turnover_monthly.cluster_name."
+        data_tests: [not_null]
+      - name: warehouse_role
+        description: "fulfillment | oversized | returns."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [fulfillment, oversized, returns]
+      - name: sort_order
+        description: "Display order in reports: Moscow first, returns last."
+        data_tests: [unique, not_null]

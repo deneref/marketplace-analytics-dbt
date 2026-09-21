@@ -418,6 +418,134 @@ models:
       - name: dbt_updated_at
         description: "Timestamp of the dbt run that built the table."
 
+  - name: fct_inventory_daily
+    description: >
+      Periodic snapshot of stock at the grain of snapshot_date × sku × warehouse_id, DENSE: one row per report day
+      for every sku × warehouse pair the stocks-on-warehouses report has ever listed, from the day it first appeared
+      (so the denominator of "days in stock" starts on a different day for every pair — the day the card reached
+      that warehouse, not 2025-01-08). snapshot_date is the END of that day (Moscow): an order placed on day D is
+      reserved in the row of D, so the stock a buyer saw when ordering on D is the row of D − 1 — demand joins on
+      ordered_date − 1, never on delivered_date. Absence is zero: a pair the report skips that day gets a row of
+      zeros with is_reported = FALSE (the report prints its zeros itself and never dropped a pair that still had
+      units; the fill is a guarantee). A day with no report is absent, not zero. sku is the seller's code (the
+      report's ARTICLE); the warehouse label (K4) is reported_sku. Buckets are the report's and not additive: read
+      one column. No is_out_of_stock: on this grain BI would average it into "share of warehouses without the sku";
+      "in stock for a buyer" is sum(units_available) > 0 over warehouses in rpt_stock_days, and last_stocked_date /
+      next_stocked_date tell a stock-out from a card before its first delivery or after its last unit. Rows whose
+      warehouse name has no id are excluded; tests/assert_inventory_daily_excludes_no_units.sql makes excluded units
+      an error. No names, no demand, no ratios: velocity and days of cover live in reporting.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [snapshot_date, sku, warehouse_id]
+      # a filled row is all zeros; a reported row carries its label
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "is_reported or (units_fit = 0 and units_available = 0 and units_freeze = 0 and units_quarantine = 0 and units_defect = 0 and units_expired = 0 and units_utilization = 0)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "is_reported = (reported_sku is not null)"
+      # good stock is sellable + reserved; the report occasionally shows a reservation after the unit left the good
+      # stock (fit short by 1–2), never fit above the sum and never fit below available (0 rows of either in 611 reports)
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "units_fit between units_available and units_available + units_freeze"
+      # a report requested for the current day is a mid-day state (daily.sh asks for yesterday at most)
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "snapshot_date < convert_timezone('Europe/Moscow', current_timestamp())::date"
+          config: {severity: warn}
+      # the life-of-pair dates are consistent with the row's own stock
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(units_fit > 0) = coalesce(last_stocked_date = snapshot_date, false)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "next_stocked_date is null or next_stocked_date > snapshot_date"
+    columns:
+      - name: inventory_daily_key
+        description: "Surrogate key: snapshot_date + sku + warehouse_id."
+        data_tests: [unique, not_null]
+      - name: snapshot_date
+        description: "Day the stock is as of — END of day, Moscow (= reportDate of the report). The stock available to buyers during day D is the row of D − 1."
+        data_tests: [not_null]
+      - name: sku
+        description: "Seller's SKU — join key to dim_products. Comes from the report's ARTICLE column, so the five caps (K1…K5) and a decommissioned card ('dcmp-…' → Sh-M-W-012) arrive already resolved."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: sku
+      - name: warehouse_id
+        description: "Marketplace warehouse id (GET v2/warehouses), resolved from the report's warehouse name in int_stock_daily."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_ym__warehouses')
+                field: warehouse_id
+      - name: reported_sku
+        description: "SKU exactly as the report printed it (K4 for CAP-Bur-006, equal to sku otherwise). NULL on a filled row (is_reported = FALSE). Tracing only — never a join key."
+      - name: is_reported
+        description: "TRUE when the report listed this sku at this warehouse that day (even with all buckets 0); FALSE when the row was filled in by the calendar — the pair was absent from the report, which means nothing was there."
+        data_tests: [not_null]
+      - name: units_available
+        description: "Units a buyer could order at the end of the day (AVAILABLE_FOR_ORDER). The one column for 'in stock'."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: units_freeze
+        description: "Units reserved for placed orders, not yet shipped (RESERVED). Grows by the units ordered that day."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: units_fit
+        description: "Good stock (VALID) = units_available + units_freeze, occasionally 1–2 short when a reservation outlives the unit. Base for stock value and days of cover."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: units_quarantine
+        description: "Units held back from sale by the warehouse (QUARANTINE)."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: units_defect
+        description: "Units marked defective (DEFECT) — not for sale; the loss is not in cogs yet."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: units_expired
+        description: "Units past their date (EXPIRED) — 0 for apparel so far; kept because the report has the bucket."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: units_utilization
+        description: "Units awaiting disposal (UTILIZATION)."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: last_stocked_date
+        description: "Latest day up to and including this one when the pair had good stock (units_fit > 0). NULL = the card is listed at this warehouse but no unit has arrived yet. Equals snapshot_date when the row itself has stock."
+      - name: next_stocked_date
+        description: "First LATER day when the pair has good stock again; NULL = none so far (a stock-out that has not ended, or a sold-out card). Rebuilt every run, so it changes as reports arrive. A zero row with last_stocked_date set and next_stocked_date set is a stock-out inside the life of the pair."
+      - name: dbt_updated_at
+        description: "Timestamp of the dbt run that built the table."
+
   - name: dim_products
     description: >
       Conformed product dimension: one row per seller SKU (offerId = shopSku), the key every fact carries
@@ -606,6 +734,120 @@ models:
         data_type: timestamp_ltz
         description: "Timestamp of the dbt run that built the table."
 
+  - name: dim_warehouses
+    description: >
+      One row per marketplace (FBY) warehouse ever listed by GET v2/warehouses (13 as of 2026-09-15): the names,
+      places and roles behind warehouse_id in fct_order_lines (shipped from) and fct_inventory_daily (stock sits).
+      The marketplace's list gives name, address and whether the warehouse is still listed (is_current); the seed
+      warehouse_attributes adds the turnover cluster (join key to fct_inventory_turnover_monthly.cluster_name) and the
+      role — fulfillment, oversized or returns. Units at a returns warehouse are parcels on their way back and not
+      what a buyer can order: rpt_stock_days counts "in stock" over is_return_warehouse = false. has_stock_history and
+      the first/last stock report dates say whether the warehouse has ever held our goods.
+    columns:
+      - name: warehouse_id
+        description: "Marketplace warehouse id — the key facts carry."
+        data_tests: [unique, not_null]
+      - name: warehouse_name
+        description: "Name exactly as the stock report prints it ('МО Софьино (кроме КГТ) - 1'); orders print another name for the same id ('Яндекс.Маркет (Софьино)') — the id is the bridge."
+        data_tests: [unique, not_null]
+      - name: city
+        description: "City or settlement from the marketplace's address record ('Софьино', 'посёлок Шушары') — not a region: cluster_name is the analytical grouping."
+      - name: street
+      - name: latitude
+      - name: longitude
+      - name: is_current
+        description: "TRUE when the warehouse is in the latest GET v2/warehouses pull; a warehouse that left the list keeps its row (history still resolves)."
+        data_tests: [not_null]
+      - name: last_seen_date
+        description: "Date of the latest pull that listed the warehouse."
+        data_tests: [not_null]
+      - name: cluster_name
+        description: "Turnover cluster / macro-region as the goods-turnover report names it (Москва, Санкт-Петербург, Екатеринбург, Казань, Ростов). NULL until warehouse_attributes has the row — a warning, not an error, so a new warehouse never breaks the build."
+        data_tests:
+          - not_null:
+              config: {severity: warn}
+      - name: warehouse_role
+        description: "fulfillment | oversized | returns | unknown (no seed row yet)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [fulfillment, oversized, returns, unknown]
+      - name: is_return_warehouse
+        description: "TRUE for the two returns warehouses (500 МО Софьино (возвраты), 501 Домодедово возвратный). Exclude from 'in stock for a buyer'."
+        data_tests: [not_null]
+      - name: sort_order
+        description: "Display order from the seed; NULL without a seed row."
+      - name: first_stock_report_date
+        description: "First day the stock report listed the warehouse (with or without units); NULL = never held our goods."
+      - name: last_stock_report_date
+        description: "Last day the stock report listed the warehouse."
+      - name: has_stock_history
+        description: "TRUE when the stock report has ever listed the warehouse (8 of 13)."
+        data_tests: [not_null]
+      - name: dbt_updated_at
+        description: "Timestamp of the dbt run that built the table."
+
+  - name: dim_dates
+    description: >
+      Calendar: one row per day from 2025-01-01 (first stock report 2025-01-08, first order 2025-01-10) to two
+      months past today, rebuilt every run. Dense reporting views (rpt_stock_days) join to it so that a day without
+      data is a visible hole, not a missing row; tests/assert_dim_dates_is_contiguous.sql guarantees no gaps.
+      Attributes are what Looker Studio cannot derive consistently: ISO week (Monday-based), month and quarter
+      starts as dates, weekend flag. Role-playing: the same table serves ordered_date, delivered_date, snapshot_date.
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "is_weekend = (day_of_week in (6, 7))"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "iso_week_start_date <= date_day and datediff('day', iso_week_start_date, date_day) < 7"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "month_start_date = date_trunc('month', date_day)"
+    columns:
+      - name: date_day
+        description: "The day (Moscow calendar, as every date in the project)."
+        data_tests: [unique, not_null]
+      - name: day_of_week
+        description: "ISO day of week: 1 = Monday … 7 = Sunday."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7]
+                quote: false
+      - name: day_name
+        description: "Abbreviated English day name (Snowflake DAYNAME)."
+      - name: is_weekend
+        description: "TRUE on Saturday and Sunday."
+        data_tests: [not_null]
+      - name: iso_week_start_date
+        description: "Monday of the ISO week — group by this to chart weeks in order."
+        data_tests: [not_null]
+      - name: iso_week_number
+        description: "ISO week number (1–53) within iso_year."
+        data_tests: [not_null]
+      - name: iso_year
+        description: "ISO week-numbering year (differs from year_number around New Year)."
+        data_tests: [not_null]
+      - name: month_start_date
+        description: "First day of the month — group by this to chart months in order."
+        data_tests: [not_null]
+      - name: month_number
+        data_tests: [not_null]
+      - name: month_name
+        description: "Abbreviated English month name (Snowflake MONTHNAME)."
+      - name: is_month_end
+        description: "TRUE on the last day of the month — the day the turnover report is dated."
+        data_tests: [not_null]
+      - name: quarter_start_date
+        data_tests: [not_null]
+      - name: quarter_number
+        data_tests: [not_null]
+      - name: year_number
+        data_tests: [not_null]
+
 unit_tests:
   - name: dim_products_parses_sku_codes
     description: >
@@ -650,3 +892,31 @@ unit_tests:
         - {sku: 'SW-M-B-015',  product_type_code: 'SW',  product_type: null,     size: null,  size_order: null, colour_code: null, colour_name: null,   model_code: null,      model_name: null,             model_colour_code: null,         is_sku_parsed: false, is_in_catalogue: true, warehouse_sku: 'SW-M-B-015', catalogue_snapshot_date: 2026-09-09}
         - {sku: 'H-XXL-B-001', product_type_code: 'H',   product_type: 'Hoodie', size: null,  size_order: null, colour_code: null, colour_name: null,   model_code: null,      model_name: null,             model_colour_code: null,         is_sku_parsed: false, is_in_catalogue: true, warehouse_sku: 'H-XXL-B-001', catalogue_snapshot_date: 2026-09-09}
         - {sku: 'CAP-Bur-006', product_type_code: 'CAP', product_type: 'Cap',    size: 'ONE', size_order: 0, colour_code: 'BUR', colour_name: null,   model_code: 'CAP-006', model_name: 'CAP-006',        model_colour_code: 'CAP-BUR-006', is_sku_parsed: true, is_in_catalogue: false, warehouse_sku: 'K4', catalogue_snapshot_date: 2026-09-01}
+
+  - name: fct_inventory_daily_fills_the_calendar
+    description: >
+      Three report days (01, 02, 04 — 03 has no report), one resolved warehouse plus one unresolved. Day 01 lists the
+      cap under its label K4 (sku already CAP-Bur-006 from staging) with stock and a hoodie with a printed zero; day 02
+      lists only the hoodie, now in stock; day 04 lists the hoodie and a tee seen for the first time. Expected: the cap
+      gets filled zero rows on 02 and 04 (is_reported false, label null), no row exists for the missing day 03, the tee
+      has no rows before 04, the row on the unresolved warehouse is excluded, and last_/next_stocked_date read the
+      cap's life (stocked 01, never again) and the hoodie's (zero on 01 with stock ahead on 02).
+    model: fct_inventory_daily
+    given:
+      - input: ref('int_stock_daily')
+        rows:
+          - {sku: 'CAP-Bur-006', reported_sku: 'K4',        warehouse_id: 172,  warehouse_name: 'МО Софьино (кроме КГТ) - 1', snapshot_date: 2026-09-01, units_available: 3, units_freeze: 1, units_fit: 4, units_quarantine: 0, units_defect: 0, units_expired: 0, units_utilization: 0}
+          - {sku: 'H-M-B-001',   reported_sku: 'H-M-B-001', warehouse_id: 172,  warehouse_name: 'МО Софьино (кроме КГТ) - 1', snapshot_date: 2026-09-01, units_available: 0, units_freeze: 0, units_fit: 0, units_quarantine: 0, units_defect: 0, units_expired: 0, units_utilization: 0}
+          - {sku: 'H-M-B-001',   reported_sku: 'H-M-B-001', warehouse_id: 172,  warehouse_name: 'МО Софьино (кроме КГТ) - 1', snapshot_date: 2026-09-02, units_available: 2, units_freeze: 0, units_fit: 2, units_quarantine: 0, units_defect: 0, units_expired: 0, units_utilization: 0}
+          - {sku: 'H-M-B-001',   reported_sku: 'H-M-B-001', warehouse_id: 172,  warehouse_name: 'МО Софьино (кроме КГТ) - 1', snapshot_date: 2026-09-04, units_available: 1, units_freeze: 1, units_fit: 2, units_quarantine: 0, units_defect: 0, units_expired: 0, units_utilization: 0}
+          - {sku: 'T-M-B-008',   reported_sku: 'T-M-B-008', warehouse_id: 172,  warehouse_name: 'МО Софьино (кроме КГТ) - 1', snapshot_date: 2026-09-04, units_available: 5, units_freeze: 0, units_fit: 5, units_quarantine: 0, units_defect: 0, units_expired: 0, units_utilization: 0}
+          - {sku: 'H-M-B-001',   reported_sku: 'H-M-B-001', warehouse_id: null, warehouse_name: 'Склад без id',              snapshot_date: 2026-09-02, units_available: 7, units_freeze: 0, units_fit: 7, units_quarantine: 0, units_defect: 0, units_expired: 0, units_utilization: 0}
+    expect:
+      rows:
+        - {snapshot_date: 2026-09-01, sku: 'CAP-Bur-006', warehouse_id: 172, reported_sku: 'K4',        is_reported: true,  units_available: 3, units_freeze: 1, units_fit: 4, last_stocked_date: 2026-09-01, next_stocked_date: null}
+        - {snapshot_date: 2026-09-02, sku: 'CAP-Bur-006', warehouse_id: 172, reported_sku: null,        is_reported: false, units_available: 0, units_freeze: 0, units_fit: 0, last_stocked_date: 2026-09-01, next_stocked_date: null}
+        - {snapshot_date: 2026-09-04, sku: 'CAP-Bur-006', warehouse_id: 172, reported_sku: null,        is_reported: false, units_available: 0, units_freeze: 0, units_fit: 0, last_stocked_date: 2026-09-01, next_stocked_date: null}
+        - {snapshot_date: 2026-09-01, sku: 'H-M-B-001',   warehouse_id: 172, reported_sku: 'H-M-B-001', is_reported: true,  units_available: 0, units_freeze: 0, units_fit: 0, last_stocked_date: null,       next_stocked_date: 2026-09-02}
+        - {snapshot_date: 2026-09-02, sku: 'H-M-B-001',   warehouse_id: 172, reported_sku: 'H-M-B-001', is_reported: true,  units_available: 2, units_freeze: 0, units_fit: 2, last_stocked_date: 2026-09-02, next_stocked_date: 2026-09-04}
+        - {snapshot_date: 2026-09-04, sku: 'H-M-B-001',   warehouse_id: 172, reported_sku: 'H-M-B-001', is_reported: true,  units_available: 1, units_freeze: 1, units_fit: 2, last_stocked_date: 2026-09-04, next_stocked_date: null}
+        - {snapshot_date: 2026-09-04, sku: 'T-M-B-008',   warehouse_id: 172, reported_sku: 'T-M-B-008', is_reported: true,  units_available: 5, units_freeze: 0, units_fit: 5, last_stocked_date: 2026-09-04, next_stocked_date: null}
