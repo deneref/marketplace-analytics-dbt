@@ -29,9 +29,12 @@ Minimum set:
 | `fct_order_lines` | order × line (`order_line_key`) | incremental, 30-day window on `status_updated_at` (all rows when the cost file was reloaded); `delete+insert` by `order_id` (the unit of change is the order). Carries revenue, allocated fees, `cogs` (unit cost of the version valid on `delivered_date`, from `stg_finance__unit_costs`) and `contribution_margin` — the P&L line |
 | ~~`fct_order_fees`~~ | — | dropped (09.09): allocated `fee_*` sum to the order's fees exactly (tests/assert_fees_allocation_sums.sql), so it would duplicate `stg_ym__order_fees`; reconcile against staging, unpivot in reporting if BI needs `fee_type` as a dimension |
 | `fct_sales_daily` | delivered day × sku | table, one `group by` over `fct_order_lines` (incl. `cogs`, `cogs_estimated`, `contribution_margin`); only delivered units — the margin of what was SOLD; the cost of unredeemed / returned lines stays in `fct_order_lines` |
-| `fct_inventory_daily` | snapshot_date × sku × warehouse_id | table — `days_of_cover`, `is_out_of_stock` |
+| `fct_inventory_daily` | snapshot_date × sku × warehouse_id | table — dense over report days × pairs since first seen (absence = zero, `is_reported`); `snapshot_date` = END of day Moscow, demand of day D reads the row of D − 1; `units_*` buckets non-additive; `last_/next_stocked_date` frame a stock-out inside the life of a pair. No `is_out_of_stock` (BI would average it over warehouses), no days of cover — ratios live in `rpt_stock_days` |
+| `fct_stock_sku_daily` | date_day × sku | table — dense over `dim_dates` from the day after the sku's first report to the day after the latest; stock at START of day = `fct_inventory_daily` of D − 1 summed over non-returns warehouses; demand of the day from `fct_order_lines` by `ordered_date` in five buckets that add up; two explicit holes: `is_report_missing` (stock NULL) and `is_demand_known = false` (after the order feed's last day). `is_stockout_day` = zero after `first_stocked_date`. Read by `rpt_stock_sku` and `rpt_stock_days` (v3, 2026-09-17) |
 | `fct_inventory_turnover_monthly` | month × sku × macroregion | table — the marketplace's report as is, no own turnover |
-| `dim_products`, `dim_warehouses`, `dim_dates` | sku / warehouse_id / date_day | table |
+| `dim_products` | sku | table — last-seen catalogue + parsed SKU code + seeds (types, colours, models) |
+| `dim_warehouses` | warehouse_id | table — marketplace list + seed `warehouse_attributes` (turnover cluster, role: fulfillment / oversized / returns); `is_return_warehouse` excludes parcels on their way back from "in stock" |
+| `dim_dates` | date_day | table — `dbt_utils.date_spine` from 2025-01-01 to today + 2 months, ISO weeks; dense views (`rpt_stock_days`) join to it so a missing day is a visible hole |
 | `snap_offers` | sku × version | snapshot (YAML), `check` strategy, `hard_deletes: new_record` |
 
 No `fct_orders`: an order is `fct_order_lines` grouped by `order_id`.

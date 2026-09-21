@@ -1,0 +1,86 @@
+version: 2
+
+# fct_stock_sku_daily (v3, 2026-09-17). Merge into _marts__models.yml or keep as its own file — dbt reads both.
+
+models:
+  - name: fct_stock_sku_daily
+    description: >
+      One sku on one day, dense over the calendar from the day after its first stock report to the day after
+      the latest one: the stock a buyer could see at the START of the day (the previous evening's snapshot,
+      summed over warehouses that are not returns warehouses) and the demand that arrived DURING it (order lines
+      by ordered_date, five buckets that add up to units_ordered). Two kinds of hole are explicit: a day without
+      a stock report (is_report_missing, stock columns NULL) and a day after the order feed's last day
+      (is_demand_known = FALSE). Read by rpt_stock_sku and rpt_stock_days.
+    config:
+      materialized: table
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [date_day, sku]
+      - dbt_utils.expression_is_true:
+          name: fct_stock_sku_daily_demand_buckets_add_up
+          arguments:
+            expression: "units_kept + units_unredeemed + units_returned + units_in_flight + units_cancelled = units_ordered"
+      - dbt_utils.expression_is_true:
+          name: fct_stock_sku_daily_hole_or_complete
+          arguments:
+            expression: "is_report_missing or (units_available_sod is not null and is_in_stock is not null and is_stockout_day is not null)"
+      - dbt_utils.expression_is_true:
+          name: fct_stock_sku_daily_demand_watermark_is_bounded
+          arguments:
+            expression: "latest_demand_date <= latest_snapshot_date + 1"
+      - dbt_utils.expression_is_true:
+          name: fct_stock_sku_daily_stockout_only_after_delivery
+          arguments:
+            expression: "not coalesce(is_stockout_day, false) or date_day >= first_stocked_date"
+      - dbt_utils.recency:
+          arguments:
+            datepart: day
+            field: date_day
+            interval: 2
+    columns:
+      - name: stock_day_key
+        data_tests: [unique, not_null]
+      - name: date_day
+        description: The day demand happened; stock columns are as of its start.
+        data_tests: [not_null]
+      - name: sku
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_products'), field: sku}
+      - name: is_report_missing
+        data_tests: [not_null]
+      - name: units_available_sod
+        description: Sellable, unreserved units at the start of the day, network without returns warehouses. NULL on a hole.
+      - name: units_fit_sod
+      - name: units_freeze_sod
+      - name: units_unsellable_sod
+        description: quarantine + defect + expired + utilization — separate piles, none for sale.
+      - name: units_fit_at_returns_sod
+      - name: is_in_stock
+        description: units_available_sod > 0. NULL on a hole.
+      - name: is_demand_known
+        description: date_day ≤ latest_demand_date. A zero on a day after it is "unknown", not "none".
+        data_tests: [not_null]
+      - name: units_ordered
+        description: Every line placed that day, cancelled ones included — demand is the click.
+        data_tests: [not_null]
+      - name: units_kept
+        description: Received and kept (the fact's units_delivered, already net of rejected and returned).
+      - name: units_unredeemed
+      - name: units_returned
+      - name: units_in_flight
+      - name: units_cancelled
+      - name: sku_orders_count
+        description: Distinct orders with the sku that day. NOT additive across skus.
+      - name: latest_snapshot_date
+        description: Constant — the evening of the latest stock report.
+      - name: latest_demand_date
+        description: Constant — the last ordered_date in the feed, capped at latest_snapshot_date + 1.
+      - name: is_latest_day
+        description: date_day = latest_snapshot_date + 1 — the one row per sku with the newest start-of-day stock.
+      - name: first_stocked_date
+        description: First morning with good (fit) stock anywhere. NULL = never delivered.
+      - name: is_stockout_day
+        description: Zero available at the start of a day on or after first_stocked_date. FALSE before it, NULL on a hole.
