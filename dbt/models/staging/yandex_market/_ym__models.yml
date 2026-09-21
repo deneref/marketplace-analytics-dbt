@@ -700,25 +700,27 @@ models:
       End-of-day stock per snapshot_date × sku × warehouse_name × stock_type from the 'stocks-on-warehouses' REPORT
       (stock_reports; daily history from 2025-01-08, kept current by ingest/daily.sh). Replaced the offers/stocks JSON
       snapshot on 2026-09-14 — same output shape: one row per bucket with units, and one NULL-type row with units 0
-      when a SKU is listed at a warehouse with nothing in any bucket (is_empty_stock). snapshot_date = reportDate − 1
-      (the report holds the day before the requested date; verified against the last JSON snapshot). Warehouses are
+      when a SKU is listed at a warehouse with nothing in any bucket (is_empty_stock). snapshot_date = reportDate: the
+      report holds the stock at the END of the requested day (the API docs say "the day before", but orders placed on
+      day D are reserved in the report of D — checked on 1 879 order-days, scripts/check_stock_report_day.py). Warehouses are
       NAMES here — the id is joined in int_stock_daily from stg_ym__warehouses. Buckets keep the JSON endpoint's
       vocabulary (VALID → FIT, RESERVED → FREEZE, AVAILABLE_FOR_ORDER → AVAILABLE) and are not additive
-      (FIT = AVAILABLE + FREEZE) — never sum across them. Caps arrive under their warehouse SKU (K1…K5), like the
-      turnover report; resolved in the mart. Latest load per sku × warehouse × reportDate wins.
+      (FIT = AVAILABLE + FREEZE) — never sum across them. sku is the seller's code (the report's ARTICLE column);
+      the label the warehouse prints (SHOP_SKU: K1…K5 for the caps, 'dcmp-…' for a decommissioned card) is kept as
+      reported_sku — the report's own grain and the key. Latest load per label × warehouse × reportDate wins.
     data_tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
-            combination_of_columns: [snapshot_date, sku, warehouse_name, stock_type]
+            combination_of_columns: [snapshot_date, reported_sku, warehouse_name, stock_type]
     columns:
       - name: stock_level_key
-        description: "Surrogate key: snapshot_date + sku + warehouse_name + stock_type (NULL type gets the dbt_utils null placeholder, so empty rows are keyed too)."
+        description: "Surrogate key: snapshot_date + reported_sku + warehouse_name + stock_type (NULL type gets the dbt_utils null placeholder, so empty rows are keyed too)."
         data_tests: [unique, not_null]
       - name: snapshot_date
-        description: "Day the stock is as of (end of day) = reportDate − 1. History from 2025-01-08; a missing day is re-requestable with `--report stocks-report --date <day + 1>`."
+        description: "Day the stock is as of (end of day, Moscow) = reportDate. History from 2025-01-08; a missing day is re-requestable with `--report stocks-report --date <day>`. Never request today: the report of an unfinished day is a mid-day state."
         data_tests: [not_null]
       - name: sku
-        description: "Seller's SKU as the report prints it. Caps come as the warehouse label K1…K5 (see dim_products.warehouse_sku), hence the relationship to stg_ym__offers is a warning."
+        description: "Seller's SKU = the report's ARTICLE column (CAP-Bur-006 where the warehouse label says K4). Every code seen so far is a catalogue card, deleted ones included (stg_ym__offers keeps last-seen), hence a warning only."
         data_tests:
           - not_null
           - relationships:
@@ -726,6 +728,9 @@ models:
                 to: ref('stg_ym__offers')
                 field: sku
               config: {severity: warn}
+      - name: reported_sku
+        description: "SKU as the report prints it (SHOP_SKU): the warehouse label — K1…K5 for the five caps, 'dcmp-<id>' for a decommissioned card, the seller's code otherwise. Part of the key; sku is the code to join on."
+        data_tests: [not_null]
       - name: warehouse_name
         description: "Warehouse NAME as the report prints it (e.g. 'МО Софьино (кроме КГТ) - 1'); resolved to warehouse_id in int_stock_daily via stg_ym__warehouses. Closed warehouses ('ЛО Парголово', 2025) appear only in history."
         data_tests: [not_null]

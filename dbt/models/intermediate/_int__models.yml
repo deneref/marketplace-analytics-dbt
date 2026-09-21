@@ -263,8 +263,10 @@ models:
       units_fit = units_available + units_freeze — so downstream picks a column, never sums across them. A SKU listed
       at a warehouse with no stock is a row of zeros. Native key is the warehouse NAME as the report prints it;
       warehouse_id is resolved from stg_ym__warehouses and NULL for a name the marketplace no longer lists
-      (assert_stock_warehouses_resolve). sku may be a warehouse label K1…K5 for caps (dim_products.warehouse_sku).
-      No calendar fill: days without a report are absent. Parent of fct_inventory_daily.
+      (assert_stock_warehouses_resolve): a row with units on such a name is what fct_inventory_daily cannot key and
+      excludes — tests/assert_inventory_daily_excludes_no_units.sql makes that an error. sku is the seller's code
+      (report ARTICLE); reported_sku keeps the warehouse label (K4). No calendar fill: days without a report are
+      absent. Parent of fct_inventory_daily.
     data_tests:
       # grain
       - dbt_utils.unique_combination_of_columns:
@@ -277,9 +279,13 @@ models:
           config: {severity: warn}
     columns:
       - name: snapshot_date
-        description: "Day the stock is as of (end of day) — reportDate − 1 of the report."
+        description: "Day the stock is as of (end of day, Moscow) — the reportDate of the report. Stock before an order placed on day D is the row of D − 1."
         data_tests: [not_null]
       - name: sku
+        description: "Seller's SKU (the report's ARTICLE) — the code every other model keys on."
+        data_tests: [not_null]
+      - name: reported_sku
+        description: "Label the warehouse printed for the sku that day (K4 for CAP-Bur-006); the smaller label if the report printed two for one article at one warehouse."
         data_tests: [not_null]
       - name: warehouse_name
         description: "Warehouse name as printed by the report — the key this model is unique on."

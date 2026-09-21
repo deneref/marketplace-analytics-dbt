@@ -6,12 +6,14 @@
 -- sum over buckets double-counts the good stock; columns make the arithmetic explicit and impossible to get
 -- wrong downstream. A SKU listed at a warehouse with every bucket 0 comes from staging as one row with stock_type
 -- NULL and units 0 — it survives the group by as a row of zeros, which is how fct_inventory_daily sees a stock-out.
--- No calendar fill: a day without a report is simply absent (re-request it: `--report stocks-report --date <day + 1>`).
+-- No calendar fill: a day without a report is simply absent (re-request it: `--report stocks-report --date <day>`).
 --
 -- Warehouse id: the report names warehouses, orders use ids. The name is the native key of this model (a row can
 -- never be lost to a missing mapping); warehouse_id is resolved from stg_ym__warehouses and is NULL for a name the
 -- marketplace no longer lists (assert_stock_warehouses_resolve warns which ones). Since 2026-09-14 (report instead of
--- the JSON snapshot); sku may be a warehouse label K1…K5 for caps — dim_products.warehouse_sku resolves it in the mart.
+-- the JSON snapshot). sku is the seller's code (staging takes it from the report's ARTICLE column); the warehouse label
+-- (K4) rides along as reported_sku. Should the report ever print one article under two labels at one warehouse on one
+-- day (a label change), the buckets are summed and the smaller label is kept — the grain stays sku × warehouse × day.
 
 {#- stock buckets → column names (the JSON endpoint's WarehouseStockType vocabulary, kept by stg_ym__stock_levels) -#}
 {% set stock_type_columns = {
@@ -31,6 +33,7 @@ with stock_buckets as (
         sku,
         snapshot_date,
         warehouse_name,
+        min(reported_sku)                                           as reported_sku,
         {% for stock_type, col in stock_type_columns.items() -%}
         sum(iff(stock_type = '{{ stock_type }}', units, 0))        as {{ col }},
         {% endfor -%}
@@ -51,6 +54,7 @@ final as (
 
     select
         s.sku,
+        s.reported_sku,
         s.warehouse_name,
         w.warehouse_id,                                             -- NULL when the name is not in GET v2/warehouses (closed warehouse)
         s.snapshot_date,

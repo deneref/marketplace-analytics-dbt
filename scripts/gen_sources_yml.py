@@ -98,11 +98,14 @@ TABLES: list[dict] = [
             "(POST v2/reports/stocks-on-warehouses/generate with reportDate; FBY). Backfilled daily for 2025-01-08..2026-09-02 "
             "(603 reports) because the JSON endpoint behind STOCK_SNAPSHOTS only knows the current day. The date is NOT a "
             "column: it is the folder in _SOURCE_FILE (stock_reports/<run_date>/<reportDate>/stocks_on_warehouses.csv), and "
-            "the report holds the stock at the END of the day BEFORE reportDate (verified against the 2026-09-05 JSON snapshot: "
-            "VALID = FIT to the unit, AVAILABLE_FOR_ORDER = AVAILABLE, RESERVED = FREEZE) → snapshot_date = reportDate − 1 in "
-            "staging. Warehouses come as names, not ids (map in staging / dim_warehouses); warehouses with zero stock are "
-            "omitted from the report; caps appear under their warehouse SKU (K1…K5) like in GOODS_TURNOVER_TURNOVER. "
-            "Source of stg_ym__stock_levels since 2026-09-14; ingest/daily.sh requests reportDate = today every morning."
+            "the report holds the stock at the END of reportDate itself → snapshot_date = reportDate in staging (the API docs "
+            "say 'the day before the date', but orders placed on day D are reserved in the report of D — 2026-09-15, "
+            "scripts/check_stock_report_day.py; the earlier FIT 213 = 213 cross-check with the JSON snapshot proved nothing, "
+            "FIT does not move on an order). Bucket names vs the JSON snapshot: VALID = FIT, AVAILABLE_FOR_ORDER = AVAILABLE, "
+            "RESERVED = FREEZE. Warehouses come as names, not ids (map in staging / dim_warehouses); warehouses with zero "
+            "stock are omitted from the report; caps appear under their warehouse SKU (K1…K5) like in GOODS_TURNOVER_TURNOVER. "
+            "Source of stg_ym__stock_levels since 2026-09-14; ingest/daily.sh requests reportDate up to YESTERDAY every "
+            "morning — a report for an unfinished day is a mid-day state and would never be refreshed."
         ),
         "config": {"freshness": {"warn_after": {"count": 1, "period": "day"},
                                  "error_after": {"count": 3, "period": "day"}}},
@@ -499,7 +502,7 @@ DOCS_BY_TABLE["GOODS_TURNOVER_TURNOVER"] = {
 }
 DOCS_BY_TABLE["STOCK_REPORTS_STOCKS_ON_WAREHOUSES"] = {
     "SHOP_SKU": "Seller's SKU ('Ваш SKU'); caps come as the warehouse SKU (K1…K5) — resolve via dim_products.warehouse_sku.",
-    "ARTICLE": "Seller's article ('Артикул') — equals SHOP_SKU in every row so far.",
+    "ARTICLE": "Seller's article ('Артикул') — the seller's SKU. Differs from SHOP_SKU for the five caps (K1…K5 → CAP-*-00x) and for a decommissioned card ('dcmp-<id>' → Sh-M-W-012 since 2026-09-08); staging takes sku from here.",
     "MARKET_SKU": "Marketplace SKU ('SKU на Маркете').",
     "PRODUCT_NAME": "Product name on the card ('Название товара').",
     "VALID": "Good stock, units ('Годный') = FIT in the JSON snapshot: AVAILABLE_FOR_ORDER + RESERVED.",
