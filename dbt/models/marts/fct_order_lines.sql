@@ -1,3 +1,5 @@
+-- depends_on: {{ ref('stg_ym__business_orders') }}
+
 -- The order line as a FACT: one row per order × line, everything the business asks about a sold (or not sold)
 -- unit — what was ordered, what was received, what the buyer paid, what the marketplace kept.
 -- Grain: order × line (order_line_key) — identical to int_order_lines. The mart adds the final money columns and
@@ -54,6 +56,7 @@
     unique_key='order_id',
     on_schema_change='append_new_columns'
 ) }}
+
 
 with lines as (
 
