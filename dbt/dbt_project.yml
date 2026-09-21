@@ -12,7 +12,11 @@ clean-targets: ["target", "dbt_packages"]
 
 vars:
   use_demo_seeds: false        # dbt build --vars '{"use_demo_seeds": true}' runs on synthetic seeds, no API needed
-  base_month: "2025-01-01"     # index base for public rpt_* views
+  restock_lead_days: 60               # production lead time in days: rpt_stock_sku flags a restock candidate when its
+                                      # cover in days is shorter than this (the batch started today lands after the shelf empties)
+  restock_horizon_days: 120           # days a batch must cover after it lands (lead + time to see it sell and start the next one);
+                                      # also the length of the season window a year back that velocity_restock reads
+  velocity_min_units: 10              # units a window must hold before its rate is trusted over a wider one (rpt_stock_sku)
   fct_order_lines_lookback_days: 30   # incremental window: late fees and return events do not move status_updated_at
   pickup_storage_days: 7              # days a parcel waits at a Market pickup point before storage expires (official: 7;
                                       # lockers get 2, but nothing in the data marks a locker). int_order_cancellations

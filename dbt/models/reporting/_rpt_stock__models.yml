@@ -1,0 +1,246 @@
+version: 2
+
+# rpt_stock_sku + rpt_stock_days (v3, 2026-09-17). Replaces the rpt_stock_days block in _reporting__models.yml —
+# delete that block, or dbt parse fails on the duplicate model name. fct_stock_sku_daily is described in
+# models/marts/_fct_stock_sku_daily.yml.
+
+models:
+  - name: rpt_stock_sku
+    description: >
+      The restock page. One row per sku as of the latest stock report: stock this morning, how long at zero, the
+      evidence for its velocity in every window (days in stock + units ordered), two velocities with their basis
+      and a 95 % interval, the kept share, cover in days, the units lost to the current stockout run and the size
+      of a batch. A number for every sku; honesty is in velocity_*_basis and velocity_recent_n_units, never a NULL.
+      Colourway totals are SUM() in BI (one row per sku, so SUM over the colourway's sizes is exact).
+    config:
+      materialized: table
+    data_tests:
+      - dbt_utils.expression_is_true:
+          name: rpt_stock_sku_velocity_recent_is_a_number
+          arguments:
+            expression: "velocity_recent is not null and velocity_recent >= 0"
+      - dbt_utils.expression_is_true:
+          name: rpt_stock_sku_velocity_restock_is_a_number
+          arguments:
+            expression: "velocity_restock is not null and velocity_restock >= 0"
+      - dbt_utils.expression_is_true:
+          name: rpt_stock_sku_flags_are_never_null
+          arguments:
+            expression: "is_restock_candidate is not null and is_stockout_now is not null and is_in_stock is not null"
+      - dbt_utils.expression_is_true:
+          name: rpt_stock_sku_season_own_has_min_units
+          arguments:
+            expression: "velocity_restock_basis <> 'season_own' or season_units_ordered >= {{ var('velocity_min_units') }}"
+      - dbt_utils.expression_is_true:
+          name: rpt_stock_sku_candidate_implies_delivered_live
+          arguments:
+            expression: "not is_restock_candidate or (first_stocked_date is not null and lifecycle_status not in ('discontinued', 'limited'))"
+      - dbt_utils.expression_is_true:
+          name: rpt_stock_sku_stockout_run_only_at_zero
+          arguments:
+            expression: "(stockout_run_days is null) = (not is_stockout_now)"
+      - dbt_utils.expression_is_true:
+          name: rpt_stock_sku_demand_feed_not_stale
+          arguments:
+            expression: "latest_demand_date >= latest_snapshot_date - 3"
+          config:
+            severity: warn     # the page keeps working (is_demand_known guards the windows) but the "now" rows are blind
+    columns:
+      - name: sku
+        data_tests: [unique, not_null]
+      - name: latest_snapshot_date
+        description: The evening of the latest stock report; stock columns are the morning after it.
+      - name: latest_demand_date
+        description: The last day the order feed covers; every velocity window stops here.
+      - name: first_stocked_date
+        description: First morning with good stock anywhere. NULL = never delivered (a card, not a product).
+      - name: last_in_stock_date
+        description: Last morning with at least one available unit, up to the latest report.
+      - name: units_available_sod
+        description: Available (sellable, unreserved) units this morning, network without returns warehouses.
+      - name: units_fit_sod
+      - name: units_freeze_sod
+        description: Good units reserved under placed orders this morning.
+      - name: units_unsellable_sod
+      - name: units_fit_at_returns_sod
+        description: Good units at returns warehouses — parcels on their way back, arrival date unknown. Shown, never deducted.
+      - name: is_in_stock
+      - name: is_stockout_now
+        description: Zero available this morning AND delivered at least once. FALSE for a never-delivered card.
+      - name: stockout_run_days
+        description: Mornings at zero in the current run, today's included. NULL when in stock.
+      - name: stockout_days_90
+        description: Report days at zero (after the first delivery) in the last 90 calendar days.
+      - name: life_in_stock_days
+        description: Days with at least one available unit AND known demand, since the first delivery. The lifetime denominator.
+      - name: life_units_ordered
+      - name: life_units_kept
+      - name: r180_in_stock_days
+        description: Same, last 180 calendar days up to latest_demand_date.
+      - name: r180_units_ordered
+      - name: season_in_stock_days
+        description: >
+          Same, in the window a batch started today would sell in — (latest_snapshot_date + restock_lead_days,
+          + restock_lead_days + restock_horizon_days] — one year back.
+      - name: season_units_ordered
+      - name: velocity_lifetime
+        description: life_units_ordered / life_in_stock_days. NULL without a day in stock.
+      - name: velocity_recent_180
+      - name: velocity_season_ly
+      - name: velocity_recent
+        description: >
+          How the sku sells now, units ORDERED per day in stock: the last 180 days when they hold
+          velocity_min_units units, else lifetime, else lifetime on thin evidence, else the product type's rate.
+          Drives cover_days, lost_units_90 and is_restock_candidate.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments: {min_value: 0, max_value: 10}
+      - name: velocity_recent_basis
+        data_tests:
+          - accepted_values:
+              arguments: {values: [recent_180, lifetime, weak, type_avg]}
+      - name: velocity_recent_n_units
+        description: Units behind velocity_recent. 10–29 is a hint, 30+ a measurement; 'weak' rows have fewer than 10.
+      - name: velocity_recent_n_days
+      - name: velocity_recent_ci
+        description: 95 % half-width of velocity_recent, Poisson (1.96·√units / days). Never rank two skus by a difference inside it.
+      - name: type_season_index
+        description: >
+          The product type's rate in the season window a year back ÷ its rate in the recent-180 window a year
+          back, clamped to [0.5, 1.5]. NULL when either window has under 30 units for the type. With one year of
+          history it carries the brand's growth as well as the season — hence the clamp.
+      - name: type_velocity_season_ly
+      - name: velocity_restock
+        description: >
+          How the sku will sell when the batch lands: its own rate in the season window a year back
+          ('season_own', velocity_min_units units there), else velocity_recent × type_season_index
+          ('season_by_type'), else velocity_recent ('no_season'). Drives units_ordered_horizon / units_kept_horizon.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments: {min_value: 0, max_value: 10}
+      - name: velocity_restock_basis
+        data_tests:
+          - accepted_values:
+              arguments: {values: [season_own, season_by_type, no_season]}
+      - name: kept_share
+        description: Of ordered units, received and kept (lifetime); the product type's share under velocity_min_units orders.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments: {min_value: 0, max_value: 1}
+      - name: cover_days
+        description: units_available_sod / velocity_recent — mornings of stock left. NULL at zero velocity.
+      - name: lost_units_90
+        description: stockout_days_90 × velocity_recent. An UPPER estimate — size substitution is not deducted.
+      - name: units_ordered_horizon
+        description: velocity_restock × restock_horizon_days — orders in the batch's first horizon days.
+      - name: units_kept_horizon
+        description: units_ordered_horizon × kept_share — the batch size BEFORE today's stock and parcels on their way back are deducted.
+      - name: restock_lead_days
+      - name: restock_horizon_days
+      - name: is_restock_candidate
+        description: >
+          Live model, delivered at least once, would sell ≥ 1 unit during the lead time, and is at zero now or
+          runs out before a batch started today lands (cover_days < restock_lead_days). FALSE, never NULL. A
+          minimum batch size is a BI filter on units_kept_horizon, not a rule here.
+      - name: product_type_code
+      - name: model_colour_code
+        description: The colourway — the grain a print run is ordered for; SUM the sku rows of it in BI.
+      - name: size
+      - name: size_order
+      - name: lifecycle_status
+
+  - name: rpt_stock_days
+    description: >
+      The history pages (availability heatmap, seasonality, sizes): one row per day × sku, dense over the
+      calendar. Stock at the start of the day, demand during it, the colourway's size run that morning, additive
+      0/1 counters for BI ratios, and the loss of a stockout day at the sku's current rate. Nothing about "now"
+      lives here — that is rpt_stock_sku.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [date_day, sku]
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('fct_stock_sku_daily')
+      - dbt_utils.expression_is_true:
+          name: rpt_stock_days_counters_follow_flags
+          arguments:
+            expression: "in_stock_day_n <= report_day_n and stockout_day_n <= report_day_n and evidence_day_n <= in_stock_day_n and full_run_evidence_day_n <= evidence_day_n"
+    columns:
+      - name: stock_day_key
+        data_tests: [unique, not_null]
+      - name: date_day
+        data_tests: [not_null]
+      - name: sku
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_products'), field: sku}
+      - name: is_report_missing
+      - name: is_in_stock
+        description: units_available_sod > 0; NULL on a hole.
+      - name: is_stockout_day
+        description: Zero available after the first delivery; FALSE before it; NULL on a hole.
+      - name: sizes_total_count
+        description: Sizes of the colourway listed on the page that day (1 for sizeless items). Grows as cards appear — before XL's card, "full" is M + L.
+      - name: sizes_in_stock_count
+      - name: is_full_size_run
+        description: Every size listed that day in stock.
+      - name: mcc_sizes_current_count
+        description: Sizes the colourway has in dim_products today.
+      - name: is_full_current_run
+        description: Every size the colourway has TODAY was in stock that morning — the days a size share is a size share. The full_run_* counters use this.
+      - name: is_sized
+        description: sizes_total_count > 1. The size page filters on it — for sizeless items is_full_size_run is just is_in_stock.
+      - name: stock_state
+        data_tests:
+          - accepted_values:
+              arguments: {values: [no_report, in_stock, stockout, not_delivered]}
+      - name: is_demand_known
+        description: date_day ≤ latest_demand_date. FALSE means the day's zero orders are "unknown", not "none".
+      - name: units_ordered
+      - name: units_kept
+      - name: report_day_n
+      - name: in_stock_day_n
+      - name: stockout_day_n
+      - name: evidence_day_n
+        description: In stock and demand known — the days a velocity is measured on. Velocity in BI = SUM(evidence_units_ordered) / SUM(evidence_day_n).
+      - name: evidence_units_ordered
+      - name: full_run_evidence_day_n
+      - name: full_run_units_ordered
+      - name: mcc_full_run_units_ordered
+        description: The colourway's full-run orders that day, repeated on each size row — NOT additive across sizes. Size share = SUM(full_run_units_ordered) / SUM(mcc_full_run_units_ordered) grouped by model_colour_code × size.
+      - name: velocity_recent
+        description: The sku's current rate from rpt_stock_sku, constant per sku. MAX() in BI, never SUM().
+      - name: expected_lost_units
+        description: velocity_recent on a stockout day, 0 in stock, NULL on a hole. SUM() over any period; an upper estimate.
+
+unit_tests:
+  - name: rpt_stock_sku_picks_recent_then_lifetime
+    description: 12 units in the last 180 days beat 2 units in the season window; the day after the latest report is outside every window.
+    model: rpt_stock_sku
+    given:
+      - input: ref('dim_products')
+        rows:
+          - {sku: A, product_type_code: CAP, lifecycle_status: core, model_colour_code: CAP-A, size: ONE, size_order: 0}
+      - input: ref('fct_stock_sku_daily')
+        rows:
+          - {sku: A, date_day: 2026-09-16, is_latest_day: true,  units_available_sod: 0, units_fit_sod: 0, is_in_stock: false, is_stockout_day: true,  is_demand_known: false, units_ordered: 5,  units_kept: 0, latest_snapshot_date: 2026-09-15, latest_demand_date: 2026-09-04, first_stocked_date: 2025-11-20}
+          - {sku: A, date_day: 2026-09-01, is_latest_day: false, units_available_sod: 3, units_fit_sod: 3, is_in_stock: true,  is_stockout_day: false, is_demand_known: true,  units_ordered: 12, units_kept: 8, latest_snapshot_date: 2026-09-15, latest_demand_date: 2026-09-04, first_stocked_date: 2025-11-20}
+          - {sku: A, date_day: 2025-12-01, is_latest_day: false, units_available_sod: 3, units_fit_sod: 3, is_in_stock: true,  is_stockout_day: false, is_demand_known: true,  units_ordered: 2,  units_kept: 2, latest_snapshot_date: 2026-09-15, latest_demand_date: 2026-09-04, first_stocked_date: 2025-11-20}
+    expect:
+      rows:
+        - {sku: A, velocity_recent_basis: recent_180, velocity_recent: 12, velocity_recent_n_units: 12, velocity_restock_basis: no_season, is_restock_candidate: true, is_stockout_now: true, life_units_ordered: 14}
+
+  - name: rpt_stock_sku_never_delivered_is_not_a_candidate
+    model: rpt_stock_sku
+    given:
+      - input: ref('dim_products')
+        rows:
+          - {sku: B, product_type_code: SH, lifecycle_status: new, model_colour_code: SH-B, size: M, size_order: 2}
+      - input: ref('fct_stock_sku_daily')
+        rows:
+          - {sku: B, date_day: 2026-09-16, is_latest_day: true, units_available_sod: 0, units_fit_sod: 0, is_in_stock: false, is_stockout_day: false, is_demand_known: false, units_ordered: 0, units_kept: 0, latest_snapshot_date: 2026-09-15, latest_demand_date: 2026-09-04, first_stocked_date: null}
+    expect:
+      rows:
+        - {sku: B, velocity_recent_basis: type_avg, is_restock_candidate: false, is_stockout_now: false, stockout_run_days: null}
