@@ -1,16 +1,16 @@
 version: 2
 
-# Hand-maintained reference data of the seller — the part of dim_products the marketplace does not know:
+# Hand-maintained reference data of the seller, i.e. the part of dim_products the marketplace does not know:
 # our own SKU-code taxonomy and the editorial facts about a model (name, drop, launch, whether it is still made).
-# Small, rarely changing, edited by a person in git: that is what seeds are for. The raw catalogue, orders and
-# stocks are NOT seeds — they come through RAW (see models/staging); demo_* seeds are their synthetic stand-ins.
+# It is small, rarely changes and is edited by a person in git, which is what seeds are for. The raw catalogue,
+# orders and stocks are NOT seeds. They come through RAW (see models/staging); demo_* seeds are their synthetic stand-ins.
 
 seeds:
   - name: product_types
     description: >
-      First segment of the seller's SKU code (H-L-B-001 → H) → product type label for the dashboard axis, whether
-      the type has sizes (drives the SKU-code parser: a type without sizes has three segments, not four) and the
-      display order. Six rows; add one when a new type of garment appears.
+      Maps the first segment of the seller's SKU code (H in H-L-B-001) to the product type label for the dashboard
+      axis, whether the type has sizes, and the display order. has_sizes drives the SKU-code parser: a type without
+      sizes has three segments instead of four. Six rows; add one when a new type of garment appears.
     config:
       column_types:
         product_type_code: varchar
@@ -33,9 +33,9 @@ seeds:
 
   - name: colour_codes
     description: >
-      Colour segment of the SKU code → colour FAMILY and display order. The code names a family, not an exact shade:
-      the same B is cobalt blue on a hoodie and sky blue on a t-shirt, E is ecru and vanilla, GR is graphite
-      and black. The exact shade stays in product_name; this table is for legends and grouping.
+      Maps the colour segment of the SKU code to a colour FAMILY and display order. The code names a family and not
+      an exact shade. The same B is cobalt blue on a hoodie and sky blue on a t-shirt, E is ecru and vanilla, GR is
+      graphite and black. The exact shade stays in product_name; this table is for legends and grouping.
     config:
       column_types:
         colour_code: varchar
@@ -49,15 +49,15 @@ seeds:
         description: "Colour family in words, for legends."
         data_tests: [unique, not_null]
       - name: sort_order
-        description: "Light → dark order for legends and stacked charts."
+        description: "Order from light to dark, for legends and stacked charts."
         data_tests: [unique, not_null]
 
   - name: product_models
     description: >
-      One row per MODEL — the design without size and colour (model_code = type + model number, H-001). Editorial
-      facts the marketplace does not have: name, drop/collection, launch date, lifecycle status. Maintained by the
-      seller at every drop; a SKU whose model is missing here does not break the build (relationships test is
-      warn, dim_products falls back to model_code), it shows up as a warning. ~17 rows.
+      One row per MODEL, i.e. the design without size and colour (model_code = type + model number, H-001). Holds the
+      editorial facts the marketplace does not have: name, drop/collection, launch date, lifecycle status. The seller
+      maintains it at every drop. A SKU whose model is missing here does not break the build (the relationships test
+      is warn and dim_products falls back to model_code); it shows up as a warning. ~17 rows.
     config:
       column_types:
         model_code: varchar
@@ -76,7 +76,7 @@ seeds:
       - name: collection
         description: "Drop / collection / season the model belongs to. Free text, NULL until the brand fills it in."
       - name: launch_date
-        description: "Day the model went on sale. Pre-filled with the first order date from orders_stats as a proxy — replace with the real launch date; NULL for models not yet launched."
+        description: "Day the model went on sale. Pre-filled with the first order date from orders_stats as a proxy; replace it with the real launch date. NULL for models not yet launched."
       - name: lifecycle_status
         description: "Production status decided by the brand: new (just launched), core (kept in production), limited (one batch, sold until gone), discontinued (no longer made; remaining stock sells out)."
         data_tests:
@@ -93,11 +93,11 @@ seeds:
 
   - name: warehouse_attributes
     description: >
-      What the marketplace's warehouse list does not say about its own warehouses: which turnover cluster
-      (MACROREGION_NAME of the goods-turnover report: Москва, Санкт-Петербург, Екатеринбург, Казань, Ростов; Самара
-      has not appeared in a report yet) the warehouse reports under, and its role — fulfillment (sells), oversized
-      (КГТ, sells but takes bulky goods only), returns (holds unredeemed parcels on their way back; stock there is not
-      what a buyer can order). Keyed by the marketplace warehouse id; 13 rows as of 2026-09-15, add one when
+      What the marketplace's warehouse list does not say about its own warehouses. First, the turnover cluster the
+      warehouse reports under (MACROREGION_NAME of the goods-turnover report: Москва, Санкт-Петербург, Екатеринбург,
+      Казань, Ростов; Самара has not appeared in a report yet). Second, its role: fulfillment (sells), oversized
+      (КГТ, sells but takes bulky goods only) or returns (holds unredeemed parcels on their way back; stock there is
+      not what a buyer can order). Keyed by the marketplace warehouse id. 13 rows as of 2026-09-15; add one when
       GET v2/warehouses lists a new id (dim_warehouses warns on a missing row). Demo seeds use other ids and get NULLs.
     config:
       column_types:
@@ -110,7 +110,7 @@ seeds:
         description: "Marketplace warehouse id (GET v2/warehouses, also warehouse.id on orders)."
         data_tests: [unique, not_null]
       - name: cluster_name
-        description: "Cluster / macro-region as the goods-turnover report names it — join key to fct_inventory_turnover_monthly.cluster_name."
+        description: "Cluster / macro-region as the goods-turnover report names it. Join key to fct_inventory_turnover_monthly.cluster_name."
         data_tests: [not_null]
       - name: warehouse_role
         description: "fulfillment | oversized | returns."

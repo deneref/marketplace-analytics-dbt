@@ -27,7 +27,7 @@ models:
         description: "Surrogate key: sku + valid_from."
         data_tests: [unique, not_null]
       - name: sku
-        description: "Seller's SKU — the join key to stg_ym__order_lines.sku and stg_ym__offers.sku."
+        description: "Seller's SKU, the join key to stg_ym__order_lines.sku and stg_ym__offers.sku."
         data_tests:
           - not_null
           - relationships:
@@ -71,7 +71,7 @@ models:
               arguments:
                 values: ['RUB']
       - name: cost_basis
-        description: "batch_actual | supply_allocated | plan_2024 — how much to trust the number."
+        description: "batch_actual | supply_allocated | plan_2024. Says how much to trust the number."
         data_tests:
           - not_null
           - accepted_values:

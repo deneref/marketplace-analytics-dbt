@@ -1,15 +1,15 @@
 version: 2
 
-# fct_stock_sku_daily (v3, 2026-09-17). Merge into _marts__models.yml or keep as its own file — dbt reads both.
+# fct_stock_sku_daily (v3, 2026-09-17). Merge into _marts__models.yml or keep it as a separate file; dbt reads both.
 
 models:
   - name: fct_stock_sku_daily
     description: >
-      One sku on one day, dense over the calendar from the day after its first stock report to the day after
-      the latest one: the stock a buyer could see at the START of the day (the previous evening's snapshot,
-      summed over warehouses that are not returns warehouses) and the demand that arrived DURING it (order lines
-      by ordered_date, five buckets that add up to units_ordered). Two kinds of hole are explicit: a day without
-      a stock report (is_report_missing, stock columns NULL) and a day after the order feed's last day
+      One sku on one day. The calendar is dense from the day after the sku's first stock report to the day after
+      the latest one. Each row holds the stock a buyer could see at the START of the day (the previous evening's
+      snapshot, summed over all warehouses except returns warehouses) and the demand that arrived DURING it (order
+      lines by ordered_date, in five buckets that add up to units_ordered). Two kinds of hole are flagged: a day
+      without a stock report (is_report_missing, stock columns NULL) and a day after the last day of the order feed
       (is_demand_known = FALSE). Read by rpt_stock_sku and rpt_stock_days.
     config:
       materialized: table
@@ -56,7 +56,7 @@ models:
       - name: units_fit_sod
       - name: units_freeze_sod
       - name: units_unsellable_sod
-        description: quarantine + defect + expired + utilization — separate piles, none for sale.
+        description: quarantine + defect + expired + utilization. Separate piles, none of them for sale.
       - name: units_fit_at_returns_sod
       - name: is_in_stock
         description: units_available_sod > 0. NULL on a hole.
@@ -64,7 +64,7 @@ models:
         description: date_day ≤ latest_demand_date. A zero on a day after it is "unknown", not "none".
         data_tests: [not_null]
       - name: units_ordered
-        description: Every line placed that day, cancelled ones included — demand is the click.
+        description: All lines placed that day, cancelled ones included (demand is counted at the click).
         data_tests: [not_null]
       - name: units_kept
         description: Received and kept (the fact's units_delivered, already net of rejected and returned).
@@ -75,11 +75,11 @@ models:
       - name: sku_orders_count
         description: Distinct orders with the sku that day. NOT additive across skus.
       - name: latest_snapshot_date
-        description: Constant — the evening of the latest stock report.
+        description: Constant. The evening of the latest stock report.
       - name: latest_demand_date
-        description: Constant — the last ordered_date in the feed, capped at latest_snapshot_date + 1.
+        description: Constant. The last ordered_date in the feed, capped at latest_snapshot_date + 1.
       - name: is_latest_day
-        description: date_day = latest_snapshot_date + 1 — the one row per sku with the newest start-of-day stock.
+        description: date_day = latest_snapshot_date + 1, the one row per sku with the newest start-of-day stock.
       - name: first_stocked_date
         description: First morning with good (fit) stock anywhere. NULL = never delivered.
       - name: is_stockout_day
