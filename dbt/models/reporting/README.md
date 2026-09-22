@@ -1,76 +1,112 @@
-# reporting — what Looker Studio reads
+# reporting: what Looker Studio reads
 
-One wide view per dashboard page: the fact joined to its dimensions, so a page reads exactly one data source.
-Not an extra layer for its own sake — it pays for two earlier decisions.
+There is one wide model per dashboard page, with the fact already joined to its dimensions, so each page reads a
+single data source.
 
-**The connector.** Snowflake's connector for Looker Studio does not push filters down for DATE / TIME /
-TIMESTAMP columns, so the period control on a dashboard never narrows the query: the dataset must be small by
-itself. Its 1M-row / 50MB quota is counted per data source, field names must be ASCII (values need not be), and
-blends take at most five sources, aggregate each before joining, and cannot be reused across reports.
+Two constraints shaped this layer.
 
-**Facts carry keys only.** Names and categories live in `dim_products` / `dim_warehouses` (a fact is
-incremental; an attribute copied into it would freeze for rows outside the window). Something has to join them
-back, and that is here.
+The first is the Snowflake connector for Looker Studio. It doesn't push filters down for DATE / TIME / TIMESTAMP
+columns, so the period control on a dashboard never narrows the query, and the dataset has to be small on its own.
+The 1M-row / 50MB quota is counted per data source. Field names must be ASCII (values can be anything). Blends take
+at most five sources, aggregate each one before joining, and can't be reused across reports.
 
-Rules for every `rpt_*`:
-
-- ratios are never stored — keep the numerator and the denominator as columns and let BI divide the sums; a
-  stored `margin_pct` returns garbage under any grouping;
-- no calendar columns — Looker Studio derives week and month from the date;
-- grain stays the grain of the fact, and a singular test proves the view is the fact plus columns, nothing lost
-  and nothing invented (`tests/assert_rpt_sales_daily_matches_fact.sql` is the pattern). The one allowed
-  extension is a `union all` of two facts that share the columns, each half reconciled to its own fact by its own
-  test and told apart by an explicit column — `rpt_sales_daily` does this with `outcome`
-  (`assert_rpt_sales_daily_losses_match_lines.sql` is the second half). A `union all` may also SPLIT a fact row
-  when the outcome is a property of the unit rather than of the row, and then the grain carries the columns that
-  tell the parts apart (`rpt_sales_daily`: `outcome`, `loss_reason`, `kept_instead`);
-- reporting does not compute business logic — the classification arrives ready from the facts. The single exception
-  in the project is `rpt_sales_daily.kept_instead`, and it is allowed only because the comparison needs
-  `dim_products`, which the facts do not carry by the «facts hold keys only» rule. Such an exception owes a test on
-  the seam to the layer that decided the rest (`assert_rpt_sales_daily_kept_instead_covered.sql`);
-- a reconciliation may repeat a FILTER or a date basis — that is the definition of the half it checks, and a guard
-  that the view did not quietly re-draw it — but never a CLASSIFICATION: a copied rule passes its own bugs. So the
-  money rule of `rpt_sales_daily` (which half pays a line's fees) is checked from the line side instead
-  (`assert_rpt_sales_daily_fees_counted_once.sql`: every fee on a line the page shows appears exactly once), and a
-  seam where the view derives what a fact decided is checked as a seam, against the fact's own flag
-  (`assert_rpt_sales_daily_kept_instead_covered.sql`);
-- views, not tables: the sources are small and every dashboard query scans the whole set anyway.
-
-## Public and private
-
-> **Under revision (2026-09-10).** An independent review showed the scheme below does not hold at this grain.
-> 84 % of the rows carry a single unit, so `min(units_delivered)` in the public view *is* the count constant,
-> and a single-unit row's revenue *is* one item's price — which is published on the marketplace. Looker Studio's
-> own Record Count metric is not scaled at all and gives the true number of sales outright. Masking the numbers
-> while publishing the same grain, the sku and the date does not hide the business. The likely fix is to publish
-> a coarser grain (month × product type) rather than a masked copy of this view; until that is decided, treat the
-> rest of this section as the intent, not the design.
-
-Two Looker Studio reports read the same column set. The private one runs the brand and reads `rpt_*` with real
-roubles. The public one is linked from a CV and reads `rpt_*_public`, where every money column is multiplied by
-a secret constant and every count by a second one.
-
-A constant, not an index (`revenue / revenue(base_month) * 100`): multiplication preserves the arithmetic —
-`contribution_margin = revenue − fee_total − cogs` still holds, percentages and shares stay true — whereas an
-index of revenue and an index of cost cannot be subtracted into a margin. Random per-row noise is worse than
-either: it breaks the same arithmetic, `random()` is non-deterministic so published figures would move on every
-refresh, and multiplicative noise averages out in aggregates, which is all a dashboard shows.
-
-Two constants rather than one because **the brand's prices are public on the marketplace**: with counts left
-real, `revenue / units_delivered` is an average selling price, and dividing it by the published price recovers
-the multiplier. With money and counts scaled separately only their ratio leaks.
-
-The constants come from `env_var()` with no default and never enter the repository (same pattern as the private
-cost seed). Column names in `rpt_x` and `rpt_x_public` must be identical: the public report is a copy of the
-private one with the data source swapped, and Looker breaks every widget when the schemas differ. For the same
-reason `current_basic_price` is in neither — a real price standing next to masked money gives the constant away.
+The second is that facts carry only keys. Names and categories live in `dim_products` / `dim_warehouses`, because a
+fact is incremental and an attribute copied into it would freeze for rows outside the window. They get joined back
+here.
 
 ## Pages
 
-| view | page | source | state |
+The dashboard has six pages: Sales overview, Failed deliveries & returns, Restock, Stock & seasonality, Size mix,
+About & methodology. It reads a frozen extract of these models with data as of 2026-09-17.
+
+| model | pages | built from | materialization |
 |---|---|---|---|
-| `rpt_sales_daily` | Pulse · SKU analytics · Drops — sales, and every unit that came back with what it cost (`outcome` = delivered / unredeemed / returned, plus `loss_reason` and `kept_instead`), so the page's margin is after losses and refusals can be read by product type | `fct_sales_daily` ∪ `fct_order_lines` (loss lines) + `dim_products` | written, being wired into Looker |
-| `rpt_sales_daily_public` | the same, published | `rpt_sales_daily` | next |
-| `rpt_order_economics` | Order economics: unredeemed parcels, returns, fee mix | `fct_order_lines` + `dim_products` | planned — needs a date basis for lines that were never delivered, and `fee_type` unpivoted |
-| `rpt_inventory_turnover` | Separate report «Stock»: turnover by cluster | `fct_inventory_turnover_monthly` + `dim_products` | blocked — the report's `sku` is a warehouse label (K1…K5) for caps, not resolved to catalogue skus yet |
-| `rpt_stock_days` | Separate report «Stock»: days of cover, size stock-outs | `fct_inventory_daily` + 30-day velocity from `fct_sales_daily` + `dim_products` | planned — restock is decided here, not on the sales pages; snapshots accumulate since 2026-09-03 |
+| `rpt_sales_daily` | Sales overview, Failed deliveries & returns | `fct_sales_daily` ∪ loss lines of `fct_order_lines`, + `dim_products` | view · event day × sku × `outcome` × `loss_reason` × `kept_instead` |
+| `rpt_stock_sku` | Restock | `fct_stock_sku_daily` + `dim_products` | table · one row per sku, as of the latest stock report |
+| `rpt_stock_days` | Stock & seasonality, Size mix | `fct_stock_sku_daily` + `dim_products` + `rpt_stock_sku` (velocity only) | view · day × sku |
+
+### rpt_sales_daily
+
+Sales, plus the units that didn't stay sold and what they cost. `outcome` is delivered, unredeemed or returned.
+Loss rows have revenue 0 and margin = −fees and are dated by the day the units came back. That way a single
+`SUM(contribution_margin)` gives the margin after failed sales. `loss_reason` says why a unit was lost (inferred in
+`int_order_cancellations`). `kept_instead` says what the buyer kept from the same order when they refused part of it.
+
+### rpt_stock_sku
+
+The numbers a restock decision needs, each with the evidence behind it:
+
+- stock now and days at zero;
+- `velocity_recent`: the sku's decay-weighted sales, shrunk toward a type × size prior (gamma-Poisson), together
+  with the prior, the weight of the sku's own data and a posterior interval;
+- `velocity_restock`: the same estimator for the season the batch will land in. Its base is `velocity_now`, the
+  sku's strength against its type's month curve brought to now, so a sku at zero since spring does not carry a
+  spring rate into a winter batch;
+- the size ratio to M within the colourway, kept share, cover days, missed sales over 90 days, units sold over the
+  batch horizon, and `is_restock_candidate`.
+
+Every sku gets a number, since the page ranks skus and a NULL can't be ranked. When the evidence is thin, the label
+says so (`*_basis`). It's a table because the aggregates over the dense grid would otherwise be recomputed by every
+widget, and two widgets could end up seeing two different states of the fact. Vars: `restock_lead_days`,
+`restock_horizon_days`, `velocity_half_life_days`, `velocity_prior_units`, `season_prior_units`,
+`index_prior_units`, `kept_prior_units`, `velocity_min_units`, `season_index_clamp`,
+`season_min_coverage`. The method and the backtest
+are in the model description.
+
+### rpt_stock_days
+
+Stock at the start of the day, demand during it, and the colourway's size run that morning. It also has additive
+0/1 counters (`report_day_n`, `stockout_day_n`, full-run days and units, …), so any rate on the page can be computed
+in BI as a ratio of sums. The sales lost on a stockout day, at the sku's current rate, are a column too, so they sum
+over any period. Current-state numbers are in `rpt_stock_sku`, not here.
+
+## Rules for rpt_* models
+
+- Ratios are not stored. The numerator and the denominator are columns, and BI divides the sums. A stored
+  `margin_pct` gives wrong numbers as soon as it's grouped. The one exception is a per-sku rate in a
+  one-row-per-sku model (`rpt_stock_sku.velocity_recent`), where nothing aggregates it.
+- No calendar columns. Looker Studio derives week and month from the date.
+- The grain is the grain of the fact. A singular test checks that the view is the fact plus extra columns, with no
+  rows lost or added (`tests/assert_rpt_sales_daily_matches_fact.sql`). One extension is allowed: a `union all` of
+  two facts with the same columns, told apart by an explicit column, with each half reconciled to its own fact
+  (`rpt_sales_daily` uses `outcome`; `assert_rpt_sales_daily_losses_match_lines.sql` checks the second half). A
+  union may also split one fact row in two when the outcome belongs to units within the row. Then the grain includes
+  the columns that tell the parts apart (`outcome`, `loss_reason`, `kept_instead`).
+- Business logic stays in the facts, and classifications arrive ready-made. The exception is
+  `rpt_sales_daily.kept_instead`: comparing what was refused with what was kept needs `dim_products`, and facts
+  don't carry it. An exception like this needs a test on the join (`assert_rpt_sales_daily_kept_instead_covered.sql`)
+  and a unit test on a fixture.
+- A reconciliation test may repeat a filter but must not copy a classification. A filter or a date basis defines
+  which half is being checked. A copied rule would pass along its own bugs. So the rule that decides which half of
+  `rpt_sales_daily` carries a line's fees is checked from the line side: `assert_rpt_sales_daily_fees_counted_once.sql`
+  makes sure each fee on a line shown on the page appears once.
+- Gaps in the data stay visible. The calendar is filled in the mart (`fct_stock_sku_daily`) with `is_report_missing`
+  and `is_demand_known` flags. A day without a stock report is NULL, never zero, and drops out of both the numerator
+  and the denominator of a rate. Days after the last day of the order feed are handled the same way.
+- Estimates that BI can't compute go here (`rpt_stock_sku`: decay-weighted evidence, shrinkage to type × size, the
+  arrival window from last year). Each one has a unit test for its rule (`rpt_stock_sku_shrinks_to_the_prior`,
+  `…_never_delivered_gets_the_prior`, `…_age_counts_in_stock_days`, `…_size_ratio_within_colourway`,
+  `…_season_from_last_year_window`, `…_restock_base_is_brought_to_now`, `…_orphan_and_stale_type_keep_a_base`).
+- Views by default. The sources are small, and every dashboard query scans the whole set anyway. A table only makes
+  sense when several widgets would recompute the same window logic (`rpt_stock_sku`).
+
+## Publishing real data
+
+The public dashboard shows the brand's real figures, with the business owner's permission. I tried two cheaper
+options first and dropped both.
+
+- Masking with constants (money × k, counts × m). This breaks at the day × sku grain. 84 % of rows hold one unit, so
+  a row's revenue is the price of one item, and that price is public on the marketplace. Looker's Record Count isn't
+  scaled at all.
+- A synthetic copy of the data. Keeping the generator consistent with the models turned into a second project. The
+  synthetic stock data disagreed with `rpt_stock_sku` in seven places, so the page contradicted its own methodology.
+
+What limits the exposure is the scope of the numbers: contribution margin leaves out fixed costs, part of the cost
+of goods is estimated (`cogs_estimated`), and the data is a frozen extract.
+
+## Not built
+
+| model | would serve | why not yet |
+|---|---|---|
+| `rpt_order_economics` | fees on failed deliveries by payment type, region, warehouse | needs `fee_type` unpivoted; the reason model `int_order_cancellations` is ready for it |
+| `rpt_inventory_turnover` | the marketplace's turnover by cluster | the report's `sku` for caps is a warehouse label (K1…K5) that isn't mapped to catalogue skus yet |

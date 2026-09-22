@@ -16,7 +16,17 @@ vars:
                                       # cover in days is shorter than this (the batch started today lands after the shelf empties)
   restock_horizon_days: 120           # days a batch must cover after it lands (lead + time to see it sell and start the next one);
                                       # also the length of the season window a year back that velocity_restock reads
-  velocity_min_units: 10              # units a window must hold before its rate is trusted over a wider one (rpt_stock_sku)
+  # rpt_stock_sku velocity (gamma-Poisson, v4 2026-09-22). h and a picked on the backtest in the model description
+  velocity_half_life_days: 60         # an evidence day's weight halves every 60 IN-STOCK days back
+  velocity_prior_units: 3             # the type × size prior is worth 3 units of the sku's own evidence
+  season_prior_units: 10              # velocity_restock: recent × season index is worth 10 units against last year's window
+  index_prior_units: 10               # size ratio and season index shrink to 1 with 10 units
+  kept_prior_units: 10                # kept_share shrinks to the type's share with 10 resolved units
+  velocity_min_units: 10              # labels only: own units behind an estimate for 'own' / 'own_season'
+  season_index_clamp: [0.5, 1.5]      # with one year of history the season index carries the brand's growth too
+  season_min_coverage: 0.5            # rpt_stock_sku (v4.2): the season index applies only if the type's month curve
+                                      # covers at least half of the decay weight around "now"; a type at zero for months
+                                      # has no "now" to start the season from, and gets index 1 ('no_history')
   fct_order_lines_lookback_days: 30   # incremental window: late fees and return events do not move status_updated_at
   pickup_storage_days: 7              # days a parcel waits at a Market pickup point before storage expires (official: 7;
                                       # lockers get 2, but nothing in the data marks a locker). int_order_cancellations
