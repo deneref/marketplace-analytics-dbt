@@ -11,8 +11,6 @@ I built it around two questions we kept running into:
 Dashboard: [Marketplace Sales & Restock Analytics](https://lookerstudio.google.com/reporting/d80f9514-94fd-4404-9113-d71d71c5398e?hl=en).
 The data is real. It was frozen on September 17, 2026 and is published with the business owner's permission.
 
-![Sales overview](docs/dashboard.png)
-
 ## Architecture
 
 ```
