@@ -632,7 +632,7 @@ models:
               config: {severity: warn}     # a new category only warns; check product_types and the parser
       - name: product_type_code
         data_type: varchar
-        description: "First segment of the SKU code in upper case (H, L, T, SH, CAP, SC). Present even when the rest of the code does not parse."
+        description: "First segment of the SKU code in upper case (H, ZH, L, T, SH, CAP, SC). Present even when the rest of the code does not parse."
         data_tests:
           - not_null
           - relationships:
@@ -642,7 +642,7 @@ models:
               config: {severity: warn}     # unknown type = new garment type or a typo; add it to the seed
       - name: product_type
         data_type: varchar
-        description: "Product type label from product_types (Hoodie, Long sleeve, T-shirt, Shirt, Cap, Scarf), used as the category axis of the dashboard. NULL when the type code is not in the seed."
+        description: "Product type label from product_types (Hoodie, Zip hoodie, Long sleeve, T-shirt, Shirt, Cap, Scarf), used as the category axis of the dashboard. NULL when the type code is not in the seed."
       - name: model_code
         data_type: varchar
         description: "The design without size and colour: product_type_code + '-' + 3-digit model number (H-001). Model numbers repeat across types, so the type is part of the code. NULL when the SKU code does not parse."

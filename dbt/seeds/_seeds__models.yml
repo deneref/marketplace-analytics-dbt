@@ -10,7 +10,7 @@ seeds:
     description: >
       Maps the first segment of the seller's SKU code (H in H-L-B-001) to the product type label for the dashboard
       axis, whether the type has sizes, and the display order. has_sizes drives the SKU-code parser: a type without
-      sizes has three segments instead of four. Six rows; add one when a new type of garment appears.
+      sizes has three segments instead of four. Seven rows; add one when a new type of garment appears (ZH, the zip hoodie, came in 2026-09 as its own type).
     config:
       column_types:
         product_type_code: varchar
@@ -19,10 +19,10 @@ seeds:
         sort_order: integer
     columns:
       - name: product_type_code
-        description: "SKU-code prefix in upper case (H, L, T, SH, CAP, SC)."
+        description: "SKU-code prefix in upper case (H, ZH, L, T, SH, CAP, SC)."
         data_tests: [unique, not_null]
       - name: product_type
-        description: "Label shown in reports (Hoodie, Long sleeve, …)."
+        description: "Label shown in reports (Hoodie, Zip hoodie, Long sleeve, …)."
         data_tests: [unique, not_null]
       - name: has_sizes
         description: "TRUE when the SKU code carries a size segment (S/M/L/XL); FALSE for one-size items (caps, scarves)."
@@ -57,7 +57,7 @@ seeds:
       One row per MODEL, i.e. the design without size and colour (model_code = type + model number, H-001). Holds the
       editorial facts the marketplace does not have: name, drop/collection, launch date, lifecycle status. The seller
       maintains it at every drop. A SKU whose model is missing here does not break the build (the relationships test
-      is warn and dim_products falls back to model_code); it shows up as a warning. ~17 rows.
+      is warn and dim_products falls back to model_code); it shows up as a warning. ~19 rows.
     config:
       column_types:
         model_code: varchar

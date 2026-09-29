@@ -143,7 +143,7 @@ models:
       - name: product_type_code
         description: "H / L / T / SH / CAP / SC, parsed from the seller's SKU code."
       - name: product_type
-        description: "Product type from the product_types seed: Hoodie, Long sleeve, T-shirt, Shirt, Cap, Scarf. The dashboard's main axis. Null means the SKU code did not parse, and assert_sku_codes_parse warns about it upstream."
+        description: "Product type from the product_types seed: Hoodie, Zip hoodie, Long sleeve, T-shirt, Shirt, Cap, Scarf. The dashboard's main axis. Null means the SKU code did not parse, and assert_sku_codes_parse warns about it upstream."
         data_tests:
           - not_null:
               config:

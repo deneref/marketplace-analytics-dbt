@@ -1,7 +1,8 @@
 product_type_code,product_type,has_sizes,sort_order
 H,Hoodie,true,1
-L,Long sleeve,true,2
-T,T-shirt,true,3
-SH,Shirt,true,4
-CAP,Cap,false,5
-SC,Scarf,false,6
+ZH,Zip hoodie,true,2
+L,Long sleeve,true,3
+T,T-shirt,true,4
+SH,Shirt,true,5
+CAP,Cap,false,6
+SC,Scarf,false,7
